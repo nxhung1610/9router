@@ -10,12 +10,13 @@ const proxyDispatchers = new Map();
 // Env overrides for scale: WAF_JA3_HOSTS, PROXY_GEO_TTL_MS, PROXY_GEO_URL (+ fallback)
 function parseJa3Hosts() {
   const raw = process.env.WAF_JA3_HOSTS || process.env.waf_ja3_hosts;
-  if (raw && raw.trim()) return new Set(raw.split(",").map(s => s.trim()).filter(Boolean));
+  if (raw && raw.trim()) return new Set(raw.split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
   return new Set(["accounts.x.ai", "auth.x.ai"]);
 }
 const JA3_HOSTS = parseJa3Hosts();
 const GEO_CACHE = new Map(); // proxyUrl -> { country, lang, tz, expiry }
-const GEO_TTL_MS = Number(process.env.PROXY_GEO_TTL_MS || process.env.proxy_geo_ttl_ms || 300000);
+const _ttlRaw = Number(process.env.PROXY_GEO_TTL_MS || process.env.proxy_geo_ttl_ms || 300000);
+const GEO_TTL_MS = Number.isFinite(_ttlRaw) && _ttlRaw > 0 ? _ttlRaw : 300000;
 const PROXY_GEO_URL = process.env.PROXY_GEO_URL || process.env.proxy_geo_url || "https://ipapi.co/json/";
 const PROXY_GEO_FALLBACK_URL = process.env.PROXY_GEO_FALLBACK_URL || process.env.proxy_geo_fallback_url || "https://ipinfo.io/json";
 let _gotScraping = null;
@@ -68,13 +69,11 @@ async function resolveProxyGeo(proxyUrl) {
 function buildGeoHeaders(targetUrl, geo) {
   if (!geo) return {};
   try {
-    const host = new URL(targetUrl).hostname;
+    const host = new URL(targetUrl).hostname.toLowerCase();
     if (!JA3_HOSTS.has(host)) return {};
   } catch { return {}; }
   return {
     "Accept-Language": geo.lang,
-    // Sec-CH hints follow proxy geo — keep minimal to avoid mismatch
-    "Sec-CH-UA-Platform": geo.country === "VN" ? '"Windows"' : '"Windows"',
   };
 }
 
@@ -88,6 +87,7 @@ async function gotScrapingFetch(url, options) {
     ? Object.fromEntries(headersInit.entries())
     : { ...headersInit };
 
+  const gsProxyUrl = options.proxyUrl || options._proxyUrl || null;
   return new Promise((resolve, reject) => {
     let settled = false;
     const stream = gs.stream({
@@ -95,6 +95,7 @@ async function gotScrapingFetch(url, options) {
       method,
       headers,
       body: method === "GET" || method === "HEAD" ? undefined : options.body,
+      proxyUrl: gsProxyUrl || undefined,
       throwHttpErrors: false,
       retry: { limit: 0 },
       timeout: { request: undefined },
@@ -404,7 +405,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     await delayJitter(180);
     options = { ...options, headers: wafHeaders };
     // Use got-scraping JA3 for WAF via proxy
-    const ja3Res = await tryGotScrapingFetch(targetUrl, { ...options, dispatcher: await getDispatcher(proxyUrl) });
+    const ja3Res = await tryGotScrapingFetch(targetUrl, { ...options, proxyUrl, _proxyUrl: proxyUrl });
     if (ja3Res) {
       const sc = ja3Res.headers.get("set-cookie");
       if (sc) storeJarCookie(_ja3Host, sc);
