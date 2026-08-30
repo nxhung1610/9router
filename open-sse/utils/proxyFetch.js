@@ -7,10 +7,17 @@ const proxyDispatchers = new Map();
 
 // ─── JA3 + geo-aware fingerprinting ───────────────────────────────
 // Only for WAF hosts via proxy; Grok Build stays native (grok-shell).
-const JA3_HOSTS = new Set(["accounts.x.ai", "auth.x.ai"]);
+// Env overrides for scale: WAF_JA3_HOSTS, PROXY_GEO_TTL_MS, PROXY_GEO_URL (+ fallback)
+function parseJa3Hosts() {
+  const raw = process.env.WAF_JA3_HOSTS || process.env.waf_ja3_hosts;
+  if (raw && raw.trim()) return new Set(raw.split(",").map(s => s.trim()).filter(Boolean));
+  return new Set(["accounts.x.ai", "auth.x.ai"]);
+}
+const JA3_HOSTS = parseJa3Hosts();
 const GEO_CACHE = new Map(); // proxyUrl -> { country, lang, tz, expiry }
-const GEO_TTL_MS = 300000;
-const PROXY_GEO_URL = "https://ipapi.co/json/";
+const GEO_TTL_MS = Number(process.env.PROXY_GEO_TTL_MS || process.env.proxy_geo_ttl_ms || 300000);
+const PROXY_GEO_URL = process.env.PROXY_GEO_URL || process.env.proxy_geo_url || "https://ipapi.co/json/";
+const PROXY_GEO_FALLBACK_URL = process.env.PROXY_GEO_FALLBACK_URL || process.env.proxy_geo_fallback_url || "https://ipinfo.io/json";
 let _gotScraping = null;
 let _gotScrapingChecked = false;
 const _gotScrapingLoggedHosts = new Set();
@@ -33,17 +40,24 @@ async function resolveProxyGeo(proxyUrl) {
   if (!proxyUrl) return null;
   const cached = GEO_CACHE.get(proxyUrl);
   if (cached && Date.now() < cached.expiry) return cached;
-  try {
+  const tryFetch = async (url) => {
     const dispatcher = await getDispatcher(proxyUrl);
-    const r = await originalFetch(PROXY_GEO_URL, { dispatcher, signal: AbortSignal.timeout(8000) });
+    const r = await originalFetch(url, { dispatcher, signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const j = await r.json();
-    const country = String(j.country_code || j.country || "US").toUpperCase();
+    const countryRaw = j.country_code || j.country || "";
+    const country = String(countryRaw).toUpperCase().slice(0,2) || "US";
     const lang = country === "VN" ? "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7" : "en-US,en;q=0.9";
     const tz = String(j.timezone || (country === "VN" ? "Asia/Ho_Chi_Minh" : "America/Los_Angeles"));
-    const val = { country, lang, tz, expiry: Date.now() + GEO_TTL_MS };
+    return { country, lang, tz };
+  };
+  try {
+    let geo = await tryFetch(PROXY_GEO_URL);
+    if (!geo && PROXY_GEO_FALLBACK_URL) geo = await tryFetch(PROXY_GEO_FALLBACK_URL);
+    if (!geo) return null;
+    const val = { ...geo, expiry: Date.now() + GEO_TTL_MS };
     GEO_CACHE.set(proxyUrl, val);
-    dbg("GEO", `proxy ${new URL(proxyUrl).hostname} -> ${country} ${tz} lang=${lang.slice(0,12)}`);
+    dbg("GEO", `proxy ${new URL(proxyUrl).hostname} -> ${val.country} ${val.tz} lang=${val.lang.slice(0,12)}`);
     return val;
   } catch (e) {
     console.warn(`[ProxyFetch] geo lookup failed: ${e.message}`);
