@@ -5,10 +5,12 @@ import { dbg } from "./debugLog.js";
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
 
-// ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
-// Disabled: not in use. Kept commented for future re-enable.
-// Restore the original block to re-enable per-host JA3 spoofing.
-/*
+// ─── JA3 + geo-aware fingerprinting ───────────────────────────────
+// Only for WAF hosts via proxy; Grok Build stays native (grok-shell).
+const JA3_HOSTS = new Set(["accounts.x.ai", "auth.x.ai"]);
+const GEO_CACHE = new Map(); // proxyUrl -> { country, lang, tz, expiry }
+const GEO_TTL_MS = 300000;
+const PROXY_GEO_URL = "https://ipapi.co/json/";
 let _gotScraping = null;
 let _gotScrapingChecked = false;
 const _gotScrapingLoggedHosts = new Set();
@@ -25,6 +27,41 @@ async function getGotScraping() {
     _gotScraping = null;
   }
   return _gotScraping;
+}
+
+async function resolveProxyGeo(proxyUrl) {
+  if (!proxyUrl) return null;
+  const cached = GEO_CACHE.get(proxyUrl);
+  if (cached && Date.now() < cached.expiry) return cached;
+  try {
+    const dispatcher = await getDispatcher(proxyUrl);
+    const r = await originalFetch(PROXY_GEO_URL, { dispatcher, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const country = String(j.country_code || j.country || "US").toUpperCase();
+    const lang = country === "VN" ? "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7" : "en-US,en;q=0.9";
+    const tz = String(j.timezone || (country === "VN" ? "Asia/Ho_Chi_Minh" : "America/Los_Angeles"));
+    const val = { country, lang, tz, expiry: Date.now() + GEO_TTL_MS };
+    GEO_CACHE.set(proxyUrl, val);
+    dbg("GEO", `proxy ${new URL(proxyUrl).hostname} -> ${country} ${tz} lang=${lang.slice(0,12)}`);
+    return val;
+  } catch (e) {
+    console.warn(`[ProxyFetch] geo lookup failed: ${e.message}`);
+    return null;
+  }
+}
+
+function buildGeoHeaders(targetUrl, geo) {
+  if (!geo) return {};
+  try {
+    const host = new URL(targetUrl).hostname;
+    if (!JA3_HOSTS.has(host)) return {};
+  } catch { return {}; }
+  return {
+    "Accept-Language": geo.lang,
+    // Sec-CH hints follow proxy geo — keep minimal to avoid mismatch
+    "Sec-CH-UA-Platform": geo.country === "VN" ? '"Windows"' : '"Windows"',
+  };
 }
 
 async function gotScrapingFetch(url, options) {
@@ -52,7 +89,7 @@ async function gotScrapingFetch(url, options) {
     });
 
     if (options.signal) {
-      const onAbort = () => { try { stream.destroy(new Error("aborted")); } catch { } };
+      const onAbort = () => { try { stream.destroy(new Error("aborted")); } catch { } }
       if (options.signal.aborted) onAbort();
       else options.signal.addEventListener("abort", onAbort, { once: true });
     }
@@ -95,7 +132,35 @@ async function tryGotScrapingFetch(url, options) {
     return null;
   }
 }
-*/
+
+// ─── anti-leak: never forward XFF via proxy ─────────────────────
+function stripLeakyHeaders(headers) {
+  if (!headers) return headers;
+  const h = headers instanceof Headers ? Object.fromEntries(headers.entries()) : { ...headers };
+  for (const k of Object.keys(h)) if (k.toLowerCase() === "x-forwarded-for" || k.toLowerCase() === "x-real-ip") delete h[k];
+  return h;
+}
+
+// Cookie jar for WAF hosts (in-memory, resets on restart)
+const COOKIE_JAR = new Map(); // host -> "a=b; c=d"
+
+function getJarCookie(host) { return COOKIE_JAR.get(host) || ""; }
+function storeJarCookie(host, setCookie) {
+  if (!setCookie || !host) return;
+  const arr = Array.isArray(setCookie) ? setCookie : [setCookie];
+  const cur = COOKIE_JAR.get(host) || "";
+  const parts = cur ? [cur] : [];
+  for (const v of arr) {
+    const kv = String(v).split(";")[0].trim();
+    if (kv) parts.push(kv);
+  }
+  COOKIE_JAR.set(host, [...new Set(parts)].join("; "));
+}
+
+async function delayJitter(ms = 300) {
+  const j = ms + Math.floor(Math.random() * 220);
+  await new Promise(r => setTimeout(r, j));
+}
 
 // DNS cache — use Map to avoid prototype pollution via malformed hostnames
 const DNS_CACHE = new Map();
@@ -293,6 +358,10 @@ async function createBypassRequest(parsedUrl, realIP, options) {
 
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
+  // Geo-aware Accept-Language for WAF hosts via proxy
+  let geoExtra = {};
+  const _ja3Host = (() => { try { return new URL(targetUrl).hostname; } catch { return ""; } })();
+  const _isWafHost = JA3_HOSTS.has(_ja3Host);
 
   // Vercel relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
@@ -309,6 +378,25 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
   const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
   const proxyUrl = connectionProxyUrl || envProxyUrl;
+
+  // Geo lookup for WAF hosts via proxy (VN/US lang + tz)
+  if (_isWafHost && proxyUrl) {
+    const geo = await resolveProxyGeo(proxyUrl);
+    geoExtra = buildGeoHeaders(targetUrl, geo);
+    let wafHeaders = { ...geoExtra, ...(options.headers || {}) };
+    wafHeaders = stripLeakyHeaders(wafHeaders);
+    const jar = getJarCookie(_ja3Host);
+    if (jar && !wafHeaders["Cookie"] && !wafHeaders["cookie"]) wafHeaders["Cookie"] = jar;
+    await delayJitter(180);
+    options = { ...options, headers: wafHeaders };
+    // Use got-scraping JA3 for WAF via proxy
+    const ja3Res = await tryGotScrapingFetch(targetUrl, { ...options, dispatcher: await getDispatcher(proxyUrl) });
+    if (ja3Res) {
+      const sc = ja3Res.headers.get("set-cookie");
+      if (sc) storeJarCookie(_ja3Host, sc);
+      return ja3Res;
+    }
+  }
 
   // MITM DNS bypass: for known MITM-intercepted hosts, resolve real IP to avoid DNS spoof
   if (shouldBypassMitmDns(targetUrl)) {
