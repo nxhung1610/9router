@@ -97,7 +97,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // OpenAI clients should stay on /chat/completions; other clients can fall
   // back to its declared Claude target).
   const targetFormat = useTransport?.format || modelTargetFormat || getTargetFormat(provider, credentials);
-  if (useTransport && credentials) credentials.runtimeTransport = useTransport;
+  // When model requires translation (e.g. muse-spark only supports openai-responses but client sent openai),
+  // blue the transport matching modelTargetFormat so executor hits correct upstream endpoint (/responses, not /chat/completions).
+  let effectiveTransport = useTransport;
+  if (!effectiveTransport && modelTargetFormat && credentials) {
+    const fallbackTransport = resolveTransport(provider, modelTargetFormat);
+    if (fallbackTransport) effectiveTransport = fallbackTransport;
+  }
+  if (effectiveTransport && credentials) credentials.runtimeTransport = effectiveTransport;
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 
