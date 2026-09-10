@@ -300,13 +300,19 @@ export default function RotationSettingsCard({ providerId = null }) {
                         );
                       }
                       if (field.type === "select") {
+                        const current = values[field.key];
+                        // A value written through the API may not be one of the
+                        // presets — keep it selectable instead of showing blank.
+                        const options = current === "" || field.options.some((o) => o.value === current)
+                          ? field.options
+                          : [...field.options, { value: current, label: `Custom (${current} ms)` }];
                         return (
                           <Select
                             key={field.key}
                             label={field.label}
                             hint={field.hint}
-                            value={values[field.key]}
-                            options={field.options}
+                            value={current}
+                            options={options}
                             onChange={(e) => update(field.key, e.target.value, true)}
                           />
                         );

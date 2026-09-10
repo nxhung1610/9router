@@ -13,6 +13,7 @@ import {
   sanitizeRotationSettings,
   resolveRotationSettings,
   applyCooldownCap,
+  resolveResetWaitMs,
 } from "open-sse/config/rotationSettings.js";
 import { checkFallbackError, getQuotaCooldown } from "open-sse/services/accountFallback.js";
 
@@ -107,6 +108,55 @@ describe("sanitizeRotationSettings", () => {
     expect(sanitizeRotationSettings(null)).toEqual({});
     expect(sanitizeRotationSettings("x")).toEqual({});
     expect(sanitizeRotationSettings([1, 2])).toEqual({});
+  });
+});
+
+describe("resolveResetWaitMs", () => {
+  const now = Date.now();
+  const creds = (iso) => ({ allRateLimited: true, retryAfter: iso });
+
+  it("does not wait unless the mode opts in", () => {
+    const rotation = resolveRotationSettings({ rotation: { maxWaitForResetMs: 60_000 } }, null);
+    expect(rotation.onAllExhausted).toBe(ON_ALL_EXHAUSTED.FAIL);
+    expect(resolveResetWaitMs(creds(new Date(now + 5_000).toISOString()), rotation, now)).toBe(0);
+  });
+
+  it("does not wait when the budget is zero", () => {
+    const rotation = resolveRotationSettings({
+      rotation: { onAllExhausted: "wait-nearest-reset", maxWaitForResetMs: 0 },
+    }, null);
+    expect(resolveResetWaitMs(creds(new Date(now + 5_000).toISOString()), rotation, now)).toBe(0);
+  });
+
+  it("returns the remaining time when the reset is inside the budget", () => {
+    const rotation = resolveRotationSettings({
+      rotation: { onAllExhausted: "wait-nearest-reset", maxWaitForResetMs: 60_000 },
+    }, null);
+    expect(resolveResetWaitMs(creds(new Date(now + 5_000).toISOString()), rotation, now)).toBe(5_000);
+  });
+
+  it("refuses to wait for a reset beyond the budget", () => {
+    const rotation = resolveRotationSettings({
+      rotation: { onAllExhausted: "wait-nearest-reset", maxWaitForResetMs: 60_000 },
+    }, null);
+    // A monthly reset must never block a request.
+    const monthly = new Date(now + 30 * 24 * HOUR).toISOString();
+    expect(resolveResetWaitMs(creds(monthly), rotation, now)).toBe(0);
+  });
+
+  it("ignores a missing / invalid / already-passed retryAfter", () => {
+    const rotation = resolveRotationSettings({
+      rotation: { onAllExhausted: "wait-nearest-reset", maxWaitForResetMs: 60_000 },
+    }, null);
+    expect(resolveResetWaitMs({ allRateLimited: true }, rotation, now)).toBe(0);
+    expect(resolveResetWaitMs(creds("not-a-date"), rotation, now)).toBe(0);
+    expect(resolveResetWaitMs(creds(new Date(now - 1_000).toISOString()), rotation, now)).toBe(0);
+    expect(resolveResetWaitMs(null, rotation, now)).toBe(0);
+  });
+
+  it("is inert when rotation settings are absent", () => {
+    expect(resolveResetWaitMs(creds(new Date(now + 5_000).toISOString()), null, now)).toBe(0);
+    expect(resolveResetWaitMs(creds(new Date(now + 5_000).toISOString()), undefined, now)).toBe(0);
   });
 });
 

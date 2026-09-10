@@ -167,3 +167,30 @@ export function applyCooldownCap(resetsAtMs, maxCooldownMs, nowMs = Date.now()) 
   if (!maxCooldownMs || maxCooldownMs <= 0) return remaining;
   return Math.min(remaining, maxCooldownMs);
 }
+
+/**
+ * How long a request should block waiting for the nearest account reset.
+ *
+ * Returns 0 when waiting is disabled, when the provider gave no usable
+ * `retryAfter`, or when the reset falls outside the budget — a reset can be a
+ * month away, and holding the request that long is worse than failing fast.
+ *
+ * @param {object|null} credentials - the allRateLimited result of getProviderCredentials
+ * @param {object} rotation - resolved rotation settings
+ * @param {number} nowMs
+ * @returns {number} ms to wait, or 0 to not wait
+ */
+export function resolveResetWaitMs(credentials, rotation, nowMs = Date.now()) {
+  if (!rotation || rotation.onAllExhausted !== ON_ALL_EXHAUSTED.WAIT_NEAREST_RESET) return 0;
+
+  const budget = rotation.maxWaitForResetMs;
+  if (!Number.isFinite(budget) || budget <= 0) return 0;
+
+  const resetAtMs = credentials?.retryAfter ? new Date(credentials.retryAfter).getTime() : NaN;
+  if (!Number.isFinite(resetAtMs)) return 0;
+
+  const waitMs = resetAtMs - nowMs;
+  if (waitMs <= 0 || waitMs > budget) return 0;
+
+  return waitMs;
+}
