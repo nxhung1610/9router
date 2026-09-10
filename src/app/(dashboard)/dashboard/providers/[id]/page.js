@@ -19,6 +19,7 @@ import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
+import RotationSettingsCard from "@/app/(dashboard)/dashboard/providers/components/RotationSettingsCard";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
@@ -1493,6 +1494,8 @@ export default function ProviderDetailPage() {
               </div>
             </div>
           </div>
+
+          <RotationSettingsCard providerId={providerId} />
 
           {connections.length === 0 ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
