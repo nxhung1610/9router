@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import RotationSettingsCard from "./RotationSettingsCard";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -332,8 +333,11 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
       const res = await fetch("/api/settings", { cache: "no-store" });
       const data = res.ok ? await res.json() : {};
       const current = data.providerStrategies || {};
-      const override = {};
+      // Merge instead of replacing: this object also carries the provider's
+      // rotation override, which must survive a round-robin toggle.
+      const override = { ...(current[providerId] || {}) };
       if (strategy) override.fallbackStrategy = strategy;
+      else delete override.fallbackStrategy;
       if (strategy === "round-robin" && stickyLimit !== "") override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
       const updated = { ...current };
       if (Object.keys(override).length === 0) delete updated[providerId];
@@ -458,6 +462,8 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
           </>
         )}
       </Card>
+
+      <RotationSettingsCard providerId={providerId} />
 
       <AddApiKeyModal
         isOpen={showAddModal}

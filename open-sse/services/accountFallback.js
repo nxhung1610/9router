@@ -4,12 +4,15 @@ import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/er
  * Calculate exponential backoff cooldown for rate limits (429)
  * Level 1: 1s, Level 2: 2s, Level 3: 4s... → max 4 min
  * @param {number} backoffLevel - Current backoff level
+ * @param {object|null} rotation - resolved rotation settings (optional)
  * @returns {number} Cooldown in milliseconds
  */
-export function getQuotaCooldown(backoffLevel = 0) {
+export function getQuotaCooldown(backoffLevel = 0, rotation = null) {
+  const base = rotation?.backoffBaseMs ?? BACKOFF_CONFIG.base;
+  const max = rotation?.backoffMaxMs ?? BACKOFF_CONFIG.max;
   const level = Math.max(0, backoffLevel - 1);
-  const cooldown = BACKOFF_CONFIG.base * Math.pow(2, level);
-  return Math.min(cooldown, BACKOFF_CONFIG.max);
+  const cooldown = base * Math.pow(2, level);
+  return Math.min(cooldown, max);
 }
 
 /**
@@ -18,35 +21,38 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message text
  * @param {number} backoffLevel - Current backoff level for exponential backoff
+ * @param {object|null} rotation - resolved rotation settings; when omitted the
+ *   historical constants are used, so existing callers keep their behaviour
  * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
  */
-export function checkFallbackError(status, errorText, backoffLevel = 0) {
+export function checkFallbackError(status, errorText, backoffLevel = 0, rotation = null) {
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
 
+  const maxLevel = rotation?.backoffMaxLevel ?? BACKOFF_CONFIG.maxLevel;
+
   for (const rule of ERROR_RULES) {
     // Text-based rule: match substring in error message
-    if (rule.text && lowerError && lowerError.includes(rule.text)) {
-      if (rule.backoff) {
-        const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
-      }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+    const matched = (rule.text && lowerError && lowerError.includes(rule.text))
+      || (rule.status && rule.status === status);
+    if (!matched) continue;
+
+    if (rule.backoff) {
+      const newLevel = Math.min(backoffLevel + 1, maxLevel);
+      return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel, rotation), newBackoffLevel: newLevel };
     }
 
-    // Status-based rule: match HTTP status code
-    if (rule.status && rule.status === status) {
-      if (rule.backoff) {
-        const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
-      }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
-    }
+    const override = rule.cooldownKey ? rotation?.[rule.cooldownKey] : undefined;
+    const cooldownMs = typeof override === "number" ? override : rule.cooldownMs;
+    return { shouldFallback: true, cooldownMs };
   }
 
   // Default: transient cooldown for any unmatched error
-  return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
+  return {
+    shouldFallback: true,
+    cooldownMs: rotation?.transientCooldownMs ?? TRANSIENT_COOLDOWN_MS,
+  };
 }
 
 /**
@@ -197,13 +203,14 @@ export function resetAccountState(account) {
  * @param {object} account - Account object
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message
+ * @param {object|null} rotation - resolved rotation settings (optional)
  * @returns {object} Updated account with error state
  */
-export function applyErrorState(account, status, errorText) {
+export function applyErrorState(account, status, errorText, rotation = null) {
   if (!account) return account;
 
   const backoffLevel = account.backoffLevel || 0;
-  const { cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel);
+  const { cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, rotation);
 
   return {
     ...account,

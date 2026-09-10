@@ -83,8 +83,12 @@ export const QUOTA_AUTOPING_CONFIG = {
       resetAtDriftMs: 30000,
       minPingIntervalMs: 600000,
       skipWhenBlockingQuotaExhausted: true,
-      // Free and Plus Codex accounts both expose gpt-5.5; avoid fallback probes that waste requests.
-      pingModel: "gpt-5.5",
+      // Default probe model. Overridable per install via
+      // settings.codexAutoPing.pingModel — some accounts cannot reach every
+      // model (Codex *free* accounts answer 404 for gpt-5.5, while
+      // gpt-5.6-luna / gpt-5.6-terra succeed), and a probe that 404s makes the
+      // account look dead even though its quota already reset.
+      pingModel: "gpt-5.6-luna",
       pingText: "hi",
       pingInstructions: "Reply with OK.",
       pingReasoningEffort: "none",

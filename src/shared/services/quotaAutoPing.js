@@ -268,14 +268,25 @@ export async function runQuotaAutoPingTick(deps = createDefaultDeps(), state = g
       const handler = providerHandlers[provider];
       if (!handler) continue;
 
-      const enabledMap = settings?.[providerConfig.settingsKey]?.connections || {};
+      const providerSettings = settings?.[providerConfig.settingsKey] || {};
+      const enabledMap = providerSettings.connections || {};
       if (Object.keys(enabledMap).length === 0) continue;
+
+      // Allow the ping model/text to be overridden per settings. The built-in
+      // default can name a model the account cannot reach (Codex free accounts
+      // reject gpt-5.5 with a 404), which made every auto-ping fail silently and
+      // left accounts stuck in cooldown after their reset.
+      const effectiveConfig = {
+        ...providerConfig,
+        ...(providerSettings.pingModel ? { pingModel: String(providerSettings.pingModel) } : {}),
+        ...(providerSettings.pingText ? { pingText: String(providerSettings.pingText) } : {}),
+      };
 
       const conns = await deps.getProviderConnections({ provider, isActive: true });
       const targets = conns.filter((conn) => conn.authType === "oauth" && enabledMap[conn.id] === true);
       for (const conn of targets) {
         try {
-          await pingConnection(conn, provider, providerConfig, handler, deps, state);
+          await pingConnection(conn, provider, effectiveConfig, handler, deps, state);
         } catch (e) {
           state.failureCache[cacheKey(provider, conn.id)] = Date.now();
           console.warn(`[AutoPing] ${provider}:${conn.id}: ${e.message}`);

@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { ROTATION_DEFAULTS } from "open-sse/config/rotationSettings.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
@@ -13,6 +14,9 @@ const DEFAULT_SETTINGS = {
   tailscaleUrl: "",
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
+  // Tunable account-rotation knobs (see open-sse/config/rotationSettings.js).
+  // Per-provider overrides live in providerStrategies[providerId].rotation.
+  rotation: { ...ROTATION_DEFAULTS },
   quotaVisibility: {},
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
@@ -86,6 +90,9 @@ export function mergeWithDefaults(raw) {
       }
     }
   }
+  // `rotation` is an object of individual knobs, so deep-merge it: a partially
+  // stored value must still expose every knob (the settings UI renders them all).
+  merged.rotation = { ...ROTATION_DEFAULTS, ...(raw?.rotation || {}) };
   return merged;
 }
 

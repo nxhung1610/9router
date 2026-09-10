@@ -2,6 +2,7 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
+import { resolveRotationSettings, applyCooldownCap } from "open-sse/config/rotationSettings.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
@@ -244,6 +245,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
 
+  // Rotation knobs: global defaults overridden per provider (see config/rotationSettings.js)
+  const settings = await getSettings();
+  const rotation = resolveRotationSettings(settings, resolveProviderId(provider));
+
   // GitHub premium-request exhaustion is account-wide until the next UTC month.
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
@@ -255,18 +260,24 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     newBackoffLevel = 0;
   } else if (resetsAtMs && resetsAtMs > Date.now()) {
     shouldFallback = true;
-    // Antigravity quota API provides exact per-model resetAt. Do not truncate it.
-    cooldownMs = resolveProviderId(provider) === "antigravity"
-      ? resetsAtMs - Date.now()
-      : Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
+    // Antigravity quota API provides exact per-model resetAt. Never truncate it.
+    // Every other provider honours rotation.maxRateLimitCooldownMs, where 0 means
+    // "trust the reset the provider reported" (Codex free accounts reset monthly).
+    const capMs = resolveProviderId(provider) === "antigravity"
+      ? 0
+      : rotation.maxRateLimitCooldownMs;
+    cooldownMs = applyCooldownCap(resetsAtMs, capMs);
     newBackoffLevel = 0;
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, rotation));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  // Account-wide exhaustion (GitHub monthly, or cooldownPerModel=false) locks every
+  // model; otherwise only the model that actually failed is locked.
+  const lockAllModels = Boolean(githubResetAtMs) || !rotation.cooldownPerModel;
+  const lockUpdate = buildModelLockUpdate(lockAllModels ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
