@@ -15,6 +15,30 @@ import { randomUUID } from "crypto";
 import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 
+// DeepSeek thinking mode on Command Code requires the reasoning of EVERY assistant turn that
+// issued tool calls to be echoed back. Without it /alpha/generate fails mid-stream with:
+//   "The `reasoning_content` in the thinking mode must be passed back to the API."
+// Verified live against upstream (2026-09-10): HTTP 400 on every agent-loop round, i.e. whenever
+// a `tool` result message follows a tool-call turn whose content carries no reasoning block.
+// Kimi K2.6 / GLM-5.1 are unaffected; Anthropic-style `{type:"thinking"}` and
+// `{type:"redacted_thinking"}` blocks are REJECTED by the upstream ModelMessage[] schema —
+// only `{type:"reasoning", text}` is accepted, and the placeholder may be a single space.
+const REASONING_MODEL_PATTERN = /deepseek/i;
+const REASONING_BLOCK_TYPE = "reasoning";
+const REASONING_PLACEHOLDER = " ";
+
+function needsReasoningEcho(model) {
+  return REASONING_MODEL_PATTERN.test(model || "");
+}
+
+function reasoningBlock(message) {
+  const rc = message?.reasoning_content;
+  return {
+    type: REASONING_BLOCK_TYPE,
+    text: typeof rc === "string" && rc.length > 0 ? rc : REASONING_PLACEHOLDER,
+  };
+}
+
 function flattenText(content) {
   if (content == null) return "";
   if (typeof content === "string") return content;
@@ -58,7 +82,7 @@ function safeParseJson(s) {
   try { return JSON.parse(s); } catch { return {}; }
 }
 
-function convertMessages(messages = []) {
+function convertMessages(messages = [], model = "") {
   const out = [];
   const systemTexts = [];
 
@@ -89,17 +113,21 @@ function convertMessages(messages = []) {
     if (role === ROLE.ASSISTANT) {
       const blocks = [];
       const text = flattenText(m.content);
+      const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      // DeepSeek thinking mode (see REASONING_BLOCK_TYPE note above): echo the turn's reasoning
+      // ahead of its tool calls, otherwise the next round-trip is rejected by upstream.
+      if (toolCalls.length > 0 && needsReasoningEcho(model)) {
+        blocks.push(reasoningBlock(m));
+      }
       if (text) blocks.push({ type: OPENAI_BLOCK.TEXT, text });
-      if (Array.isArray(m.tool_calls)) {
-        for (const tc of m.tool_calls) {
-          const fn = tc.function || {};
-          blocks.push({
-            type: "tool-call",
-            toolCallId: tc.id || "",
-            toolName: fn.name || "",
-            input: safeParseJson(fn.arguments),
-          });
-        }
+      for (const tc of toolCalls) {
+        const fn = tc.function || {};
+        blocks.push({
+          type: "tool-call",
+          toolCallId: tc.id || "",
+          toolName: fn.name || "",
+          input: safeParseJson(fn.arguments),
+        });
       }
       out.push({ role: ROLE.ASSISTANT, content: blocks.length ? blocks : [{ type: OPENAI_BLOCK.TEXT, text: "" }] });
       continue;
@@ -134,7 +162,7 @@ function convertTools(tools) {
 }
 
 export function openaiToCommandCodeRequest(model, body, stream /* , credentials */) {
-  const { messages, system } = convertMessages(body.messages);
+  const { messages, system } = convertMessages(body.messages, model);
   const params = {
     model,
     messages,
