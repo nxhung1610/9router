@@ -57,7 +57,22 @@ const USAGE_EXTRACTORS = {
   commandcode(raw) {
     const input = n(raw.inputTokens), output = n(raw.outputTokens);
     const total = typeof raw.totalTokens === "number" ? raw.totalTokens : input + output;
-    return { promptTokens: input, completionTokens: output, totalTokens: total };
+    // CommandCode's inputTokens ALREADY includes the cached portion — same
+    // inclusive convention as OpenAI/Gemini, so do NOT fold cache into prompt.
+    // Measured against upstream: on a warm cache inputTokens=16788 with
+    // inputTokenDetails={noCacheTokens:148, cacheReadTokens:16640} (148+16640=16788),
+    // and the cold run reported the identical inputTokens=16788. Field lives in
+    // inputTokenDetails.cacheReadTokens; cachedInputTokens is a top-level mirror
+    // the CLI also reads. Keep the flat cacheReadTokens fallback for older shapes.
+    // NOTE: do NOT surface outputTokenDetails.reasoningTokens as reasoningTokens —
+    // CommandCode's outputTokens already INCLUDES reasoning (measured: outputTokens=16
+    // with outputTokenDetails={textTokens:0, reasoningTokens:16}), and
+    // calculateCostFromTokens charges reasoning_tokens on top of completion_tokens,
+    // so passing it through would double-charge the output.
+    const cached = n(raw.cachedInputTokens) || n(raw.inputTokenDetails?.cacheReadTokens) || n(raw.cacheReadTokens);
+    const out = { promptTokens: input, completionTokens: output, totalTokens: total };
+    if (cached > 0) out.cachedTokens = cached;
+    return out;
   },
 };
 
