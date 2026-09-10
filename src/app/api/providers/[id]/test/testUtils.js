@@ -471,6 +471,9 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
   });
 }
 
+// Command Code connection test target — see the commandcode case in testApiKeyConnection.
+const COMMANDCODE_TEST_URL = "https://api.commandcode.ai/provider/v1/chat/completions";
+
 async function testApiKeyConnection(connection, effectiveProxy = null) {
   if (isOpenAICompatibleProvider(connection.provider)) {
     const modelsBase = connection.providerSpecificData?.baseUrl;
@@ -749,6 +752,29 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const data = await res.json().catch(() => null);
         const valid = !!(data && data.user);
         return { valid, error: valid ? null : "Session expired — re-paste cookie" };
+      }
+      case "commandcode": {
+        // The connection's transport is /alpha/generate, but that route only serves the CLI:
+        // with stream:false upstream answers 400 "Proxy use detected" for BOTH a valid and an
+        // invalid key, so a status check there can never detect a bad key. The provider API
+        // answers 401 for a bad key and 200 for a good one (measured: 776ms, default model).
+        // stream:true is required — with stream:false the 400 masquerades as success.
+        const res = await fetchWithConnectionProxy(COMMANDCODE_TEST_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(PROVIDERS.commandcode?.headers || {}),
+            "Authorization": `Bearer ${connection.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: getDefaultModel("commandcode") || "deepseek/deepseek-v4-pro",
+            messages: [{ role: "user", content: "ping" }],
+            max_tokens: 1,
+            stream: true,
+          }),
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
       }
       case "opencode-go": {
         const res = await fetchWithConnectionProxy("https://opencode.ai/zen/go/v1/chat/completions", {

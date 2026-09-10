@@ -3,9 +3,14 @@ import { getProviderNodeById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
-import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+
+// Command Code connection test target. NOT the connection's /alpha/generate transport: that
+// endpoint serves the CLI only and answers 400 ("Proxy use detected") for a valid and an
+// invalid key alike when stream:false, so it can never distinguish a bad key. The provider
+// API answers 401 (bad key) / 200 (good key) and needs stream:true for that clean 401.
+const COMMANDCODE_TEST_URL = "https://api.commandcode.ai/provider/v1/chat/completions";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -411,22 +416,23 @@ export async function POST(request) {
         }
 
         case "commandcode": {
-          const cfg = PROVIDERS.commandcode;
-          const model = getDefaultModel("commandcode");
-          const payload = openaiToCommandCodeRequest(model, {
-            messages: [{ role: "user", content: "ping" }],
-            max_tokens: 1,
-            stream: false,
-          }, false);
-          const res = await fetch(cfg.baseUrl, {
+          // /alpha/generate serves the CLI only: with stream:false it replies 400
+          // "Proxy use detected" for a valid AND an invalid key alike, which made this
+          // branch accept garbage keys. Use the provider API, which returns 401 for a
+          // bad key and 200 for a good one. stream:true is required for a clean 401.
+          const res = await fetch(COMMANDCODE_TEST_URL, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              ...(cfg.headers || {}),
-              "x-session-id": crypto.randomUUID(),
+              ...(PROVIDERS.commandcode?.headers || {}),
               "Authorization": `Bearer ${apiKey}`,
             },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              model: getDefaultModel("commandcode") || "deepseek/deepseek-v4-pro",
+              messages: [{ role: "user", content: "ping" }],
+              max_tokens: 1,
+              stream: true,
+            }),
           });
           isValid = res.status !== 401 && res.status !== 403;
           break;
