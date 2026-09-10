@@ -138,6 +138,46 @@ describe("quota auto-ping", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("honours a configured Codex ping model instead of the built-in default", async () => {
+    // Regression: the built-in default probe model can 404 on some accounts
+    // (Codex free accounts reject gpt-5.5), which made every ping fail and left
+    // the account looking exhausted after its quota had already reset.
+    deps.getSettings.mockResolvedValue({
+      codexAutoPing: { connections: { "codex-1": true }, pingModel: "gpt-5.6-luna" },
+    });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "codex" ? [{ id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token" }] : []
+    ));
+    state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+    getCodexUsage.mockResolvedValue({
+      quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    const executor = deps.getExecutor.mock.results[0].value;
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    const call = executor.execute.mock.calls[0][0];
+    expect(call.model).toBe("gpt-5.6-luna");
+    expect(call.body.model).toBe("gpt-5.6-luna");
+  });
+
+  it("falls back to the built-in Codex ping model when none is configured", async () => {
+    deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "codex" ? [{ id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token" }] : []
+    ));
+    state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+    getCodexUsage.mockResolvedValue({
+      quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    const executor = deps.getExecutor.mock.results[0].value;
+    expect(executor.execute.mock.calls[0][0].model).toBe("gpt-5.5");
+  });
+
   it("does not ping Codex on the first resetAt observation", async () => {
     deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
     deps.getProviderConnections.mockImplementation(async ({ provider }) => (

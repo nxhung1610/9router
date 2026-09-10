@@ -24,6 +24,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { resolveRotationSettings, resolveResetWaitMs } from "open-sse/config/rotationSettings.js";
 
 /**
  * Handle chat completion request
@@ -230,12 +231,42 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastError = null;
   let lastStatus = null;
 
+  // Cap how many accounts a single request may burn through. Without a cap a
+  // large pool (hundreds of farmed accounts) turns one bad request into hundreds
+  // of upstream calls. 0 keeps the historical unlimited behaviour.
+  const rotation = resolveRotationSettings(await getSettings(), provider);
+  const attemptCap = rotation.maxAttemptsPerRequest;
+  let attempts = 0;
+  let waitedForReset = false;
+
   while (true) {
+    if (attemptCap > 0 && attempts >= attemptCap) {
+      log.warn("FALLBACK", `⇄ attempt cap reached for [${provider}/${model}] after ${attempts} accounts`);
+      return errorResponse(
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        `[${provider}/${model}] rotation attempt cap reached (${attempts} accounts tried, cap ${attemptCap})`,
+      );
+    }
+
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    attempts++;
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
+        // Opt-in (rotation.onAllExhausted = "wait-nearest-reset"): hold the
+        // request when the nearest reset is within maxWaitForResetMs, then retry
+        // the pool once. Never loops — waitedForReset gates it.
+        if (!waitedForReset) {
+          const waitMs = resolveResetWaitMs(credentials, rotation);
+          if (waitMs > 0) {
+            waitedForReset = true;
+            log.warn("FALLBACK", `⇄ all accounts exhausted, waiting ${Math.round(waitMs / 1000)}s for the nearest reset`);
+            await new Promise((resolve) => setTimeout(resolve, waitMs + 250));
+            continue;
+          }
+        }
+
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);

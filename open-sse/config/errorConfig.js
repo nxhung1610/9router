@@ -38,10 +38,14 @@ export const BACKOFF_CONFIG = {
 // Default cooldown for transient/unknown errors
 export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 
-// Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
+// Hard cap for provider-reported rate limit cooldown (legacy default).
+// Prefer `rotation.maxRateLimitCooldownMs` (see config/rotationSettings.js),
+// where 0 means "honour the provider-reported reset as-is". Codex free accounts
+// reset roughly monthly, so a flat 30 minute cap made an exhausted account look
+// available again every half hour.
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
-// Cooldown durations (ms)
+// Cooldown durations (ms) — defaults for the long/short rule buckets below.
 const COOLDOWN = {
   long: 2 * 60 * 1000,
   short: 5 * 1000,
@@ -50,17 +54,18 @@ const COOLDOWN = {
 /**
  * Unified error classification rules.
  * Checked top-to-bottom: text rules first (by order), then status rules.
- * Each rule: { text?, status?, cooldownMs?, backoff? }
+ * Each rule: { text?, status?, cooldownMs?, cooldownKey?, backoff? }
  *   - text: substring match (case-insensitive) on error message
  *   - status: HTTP status code match
- *   - cooldownMs: fixed cooldown duration
+ *   - cooldownMs: fixed cooldown duration (default)
+ *   - cooldownKey: name of the rotation setting that overrides `cooldownMs`
  *   - backoff: true = use exponential backoff (rate limit)
  */
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
-  { text: "no credentials",           cooldownMs: COOLDOWN.long },
-  { text: "request not allowed",      cooldownMs: COOLDOWN.short },
-  { text: "improperly formed request", cooldownMs: COOLDOWN.long },
+  { text: "no credentials",           cooldownMs: COOLDOWN.long,  cooldownKey: "longCooldownMs" },
+  { text: "request not allowed",      cooldownMs: COOLDOWN.short, cooldownKey: "shortCooldownMs" },
+  { text: "improperly formed request", cooldownMs: COOLDOWN.long, cooldownKey: "longCooldownMs" },
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
@@ -68,10 +73,10 @@ export const ERROR_RULES = [
   { text: "overloaded",               backoff: true },
 
   // --- Status-based rules (fallback when text doesn't match) ---
-  { status: 401, cooldownMs: COOLDOWN.long },
-  { status: 402, cooldownMs: COOLDOWN.long },
-  { status: 403, cooldownMs: COOLDOWN.long },
-  { status: 404, cooldownMs: COOLDOWN.long },
+  { status: 401, cooldownMs: COOLDOWN.long,  cooldownKey: "longCooldownMs" },
+  { status: 402, cooldownMs: COOLDOWN.long,  cooldownKey: "longCooldownMs" },
+  { status: 403, cooldownMs: COOLDOWN.long,  cooldownKey: "longCooldownMs" },
+  { status: 404, cooldownMs: COOLDOWN.long,  cooldownKey: "longCooldownMs" },
   { status: 429, backoff: true },
 ];
 
