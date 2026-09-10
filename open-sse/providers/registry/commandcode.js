@@ -22,6 +22,12 @@ export default {
     baseUrl: "https://api.commandcode.ai/alpha/generate",
     format: "commandcode",
     forceStream: true,
+    // Fail fast on a stuck connect. Measured: upstream always returns response
+    // headers in <1s even for a 160k-token prompt, so 15s is generous headroom.
+    // The 60s default multiplies badly because base.js retries connect failures
+    // with the 502 config (3 attempts) -> worst case 4*60s + 3*3s = 249s before
+    // the caller sees an error. At 15s that drops to 4*15s + 9s = 69s.
+    timeoutMs: 15000,
     headers: {
       "x-command-code-version": "1.53.0",
       "x-cli-environment": "cli",
