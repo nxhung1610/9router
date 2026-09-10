@@ -267,6 +267,17 @@ export const PROVIDER_PRICING = {
     "z-ai/glm-5.2": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
     "z-ai/glm-5.3-free": { input: 0, output: 0, cached: 0, reasoning: 0 },
   },
+  // Command Code (provider id/alias `commandcode`, UI alias `cmc`). Reseller
+  // rates — only V4.1 Flash needs an override; everything else resolves from
+  // MODEL_PRICING/PATTERN_PRICING. Source: commandcode.ai/docs/plans/go model
+  // table (checked live 2026-09-10): caps text+vision+reasoning, 1M ctx.
+  // Rates below are OFF-PEAK; peak is $0.30/$1.20 for 7h/day (01–04 & 06–10 UTC
+  // Mon–Fri), off-peak covers 17h/day plus all weekend.
+  // Without this override the `*deepseek-v4*` pattern priced it at $0.14/$0.28
+  // (output 2.1× too cheap — observed in usageHistory 2026-09-10).
+  commandcode: {
+    "deepseek/deepseek-v4.1-flash": { input: 0.15, output: 0.60, cached: 0.003, reasoning: 0.60 },
+  },
 };
 
 /**
