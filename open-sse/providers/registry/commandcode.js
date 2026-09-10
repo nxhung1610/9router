@@ -29,7 +29,8 @@ export default {
   },
   models: [
     { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro" },
-    { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+    { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", contextLength: 1000000 },
+    { id: "deepseek/deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", contextLength: 1000000 },
     { id: "moonshotai/Kimi-K2.6", name: "Kimi K2.6" },
     { id: "moonshotai/Kimi-K2.5", name: "Kimi K2.5" },
     { id: "zai-org/GLM-5.1", name: "GLM 5.1" },
