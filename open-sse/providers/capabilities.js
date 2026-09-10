@@ -116,11 +116,14 @@ export const MODEL_CAPABILITIES = {
   // DeepSeek's first V4 model with image input; text limits match V4-Flash.
   "deepseek-v4-flash-vision-exp": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
 
-  // DeepSeek V4.1 Flash — also vision + reasoning (Command Code catalog caps:
-  // text/vision/reasoning all true, 1M ctx, checked live 2026-09-10). Without
-  // this exact entry the id falls through to the `*deepseek-v4*` pattern, which
-  // declares no vision, so image requests on it would be re-routed away.
-  "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
+  // DeepSeek V4.1 Flash — Command Code's own catalog advertises vision:true, but
+  // 9router CANNOT deliver images to this provider: openai-to-commandcode.js
+  // rewrites every image block to the literal text "[image omitted]" (line ~44).
+  // Measured 2026-09-10 — a 64x64 red PNG through cmc/deepseek/deepseek-v4.1-flash
+  // answered "I can't see the image — it didn't come through."
+  // So vision stays FALSE: the Vision Adapter then re-routes image requests to a
+  // model that really receives them instead of silently dropping the image.
+  "deepseek-v4.1-flash": { vision: false, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
   "vision-model":      { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 },
