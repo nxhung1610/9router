@@ -116,14 +116,13 @@ export const MODEL_CAPABILITIES = {
   // DeepSeek's first V4 model with image input; text limits match V4-Flash.
   "deepseek-v4-flash-vision-exp": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
 
-  // DeepSeek V4.1 Flash — Command Code's own catalog advertises vision:true, but
-  // 9router CANNOT deliver images to this provider: openai-to-commandcode.js
-  // rewrites every image block to the literal text "[image omitted]" (line ~44).
-  // Measured 2026-09-10 — a 64x64 red PNG through cmc/deepseek/deepseek-v4.1-flash
-  // answered "I can't see the image — it didn't come through."
-  // So vision stays FALSE: the Vision Adapter then re-routes image requests to a
-  // model that really receives them instead of silently dropping the image.
-  "deepseek-v4.1-flash": { vision: false, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
+  // DeepSeek V4.1 Flash — the model reads images; verified against Command Code's
+  // OpenAI-compatible endpoint (/provider/v1/chat/completions): a 64x64 solid red
+  // PNG answered "Red" with reasoning "The image is a solid red square.", a blue
+  // one answered "Blue", and usage carried image_tokens. Capability belongs to the
+  // model, so it lives here as vision:true; the transports that cannot carry an
+  // image (the /alpha/generate CLI route) narrow it in PROVIDER_CAPABILITIES.
+  "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
   "vision-model":      { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 },
@@ -153,6 +152,19 @@ const CODEX_GPT_56_DEFAULT_CAPS = { vision: true, reasoning: true, search: true,
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
+  // Command Code's CLI transport (/alpha/generate) cannot deliver an image: the
+  // request translator rewrites every image block to the literal text
+  // "[image omitted]" (openai-to-commandcode.js), and sending a correctly shaped
+  // Anthropic image block straight to that endpoint came back with the WRONG
+  // colour (red -> "black", blue -> "white"), so upstream is not decoding it
+  // either. The model itself does read images — see "deepseek-v4.1-flash" in
+  // MODEL_CAPABILITIES — so the limit is narrowed here, per transport, instead of
+  // disabling vision for the model everywhere.
+  // The /provider/v1 OpenAI-compatible node ("command/") is unaffected and keeps
+  // vision:true. Restate every field: a provider match returns early.
+  "commandcode": {
+    "deepseek-v4.1-flash": { vision: false, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
+  },
   // NVIDIA NIM is OpenAI-compatible → rejects MiniMax/GLM native `thinking` field.
   // Force openai reasoning_effort format for its reasoning models. #issue
   "nvidia": {
