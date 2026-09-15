@@ -14,7 +14,10 @@ export default {
   noAuth: true,
   transport: {
     baseUrl: "https://opencode.ai",
-    format: "openai-responses",
+    // Muse Spark on OpenCode Free is served by /zen/v1/responses (the executor
+    // routes it per model); a non-streaming Responses body is never translated
+    // into choices[].message.content, so JSON clients got empty output. Force
+    // streaming for the provider and let chatCore fold SSE back to JSON.
     forceStream: true,
     headers: {
       "x-opencode-client": "desktop",

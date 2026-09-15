@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dbMocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   updateProviderConnection: vi.fn(),
+  // Rotation knobs read settings inside markAccountUnavailable (config/rotationSettings.js).
+  getSettings: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@/lib/localDb", () => dbMocks);
