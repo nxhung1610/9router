@@ -4,6 +4,12 @@ import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLock
 import { resolveRotationSettings, applyCooldownCap } from "open-sse/config/rotationSettings.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
+import {
+  ensureCodexQuota,
+  isCodexAccountBlocked,
+  recordCodexQuotaExhaustion,
+  getEarliestCodexQuotaReset,
+} from "./codexQuota.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -31,6 +37,22 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+
+  // Codex quota probe runs BEFORE the selection mutex is taken. It is a network
+  // call (measured ~2s cold for 11 accounts) and the mutex serialises account
+  // selection for *every* provider — holding it across the probe would stall
+  // unrelated requests. The probe only fills the cache; the selection below
+  // reads it synchronously.
+  let codexRotation = null;
+  if (resolveProviderId(provider) === "codex") {
+    codexRotation = resolveRotationSettings(await getSettings(), "codex");
+    if (codexRotation.quotaAwareAccounts) {
+      const candidates = await getProviderConnections({ provider: "codex", isActive: true });
+      await ensureCodexQuota(candidates, { ttlMs: codexRotation.quotaCacheTtlMs, enabled: true });
+    }
+  }
+  const codexGateEnabled = Boolean(codexRotation?.quotaAwareAccounts);
+
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -82,10 +104,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
-    // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
+    // Filter out model-locked, excluded, and quota-exhausted connections.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      // Codex: skip accounts whose cached quota reading says they are dry.
+      if (codexGateEnabled && isCodexAccountBlocked(c.id)) {
+        const account = c.id?.slice(0, 8) || "unknown";
+        log.info("CODEX_QUOTA", `${account} | CACHE_BLOCK ${model || "any"} — skip until quota re-check`);
+        return false;
+      }
       // Antigravity: skip if live quota exhausted for this model
       if (isAntigravity && model && antigravityQuotaCache) {
         const quota = antigravityQuotaCache.get(c.id)?.[model];
@@ -118,6 +146,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           if (resetAt && new Date(resetAt).getTime() > Date.now()) expiries.push(resetAt);
         });
       }
+      // Quota-blocked Codex accounts carry no modelLock_* field; without this the
+      // caller would be told "no credentials" instead of when to try again.
+      const quotaResetMs = codexGateEnabled ? getEarliestCodexQuotaReset(connections) : null;
+      if (quotaResetMs) expiries.push(new Date(quotaResetMs).toISOString());
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
         const earliestConn = lockedConns[0];
@@ -290,6 +322,18 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
+
+  // Feed the quota cache too: an upstream 429 told us this account is dry, with
+  // the provider's own reset time. Doing it here (rather than in each handler)
+  // means every provider path that locks an account also teaches the gate.
+  // Only quota/rate-limit failures qualify — a 401 or 404 is not "no quota", and
+  // overwriting a good reading with one would wrongly gate a working account.
+  const isCodexQuotaFailure = resolveProviderId(provider) === "codex"
+    && rotation.quotaAwareAccounts
+    && (Boolean(resetsAtMs) || status === 429 || status === 402);
+  if (isCodexQuotaFailure) {
+    recordCodexQuotaExhaustion(connectionId, resetsAtMs, rotation.quotaCacheTtlMs);
+  }
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);

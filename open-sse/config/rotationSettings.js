@@ -56,7 +56,9 @@ export const ROTATION_DEFAULTS = Object.freeze({
   backoffMaxLevel: BACKOFF_CONFIG.maxLevel,
   /** Lock only the failing model (true) or the whole account (false). */
   cooldownPerModel: true,
-  /** Behaviour when every account is exhausted. */
+  /**
+   * Behaviour when every account is exhausted.
+   */
   onAllExhausted: ON_ALL_EXHAUSTED.FAIL,
   /**
    * How long a request may block waiting for the nearest account reset when
@@ -65,6 +67,17 @@ export const ROTATION_DEFAULTS = Object.freeze({
    * that long is worse than an immediate 503.
    */
   maxWaitForResetMs: 0,
+  /**
+   * (Codex) Check each account's quota *before* selecting it, instead of only
+   * learning it is dry from an upstream 429. See src/sse/services/codexQuota.js.
+   */
+  quotaAwareAccounts: true,
+  /**
+   * (Codex) How long a quota reading is trusted before it is re-checked. Also
+   * bounds how long an exhausted account waits between re-checks, so an early
+   * reset is picked up in minutes rather than at the end of a month-long window.
+   */
+  quotaCacheTtlMs: 5 * MINUTE,
 });
 
 /** Inclusive bounds used to reject nonsense from the settings API / UI. */
@@ -78,6 +91,12 @@ export const ROTATION_BOUNDS = Object.freeze({
   backoffMaxMs: { min: 1000, max: 24 * 60 * MINUTE },
   backoffMaxLevel: { min: 1, max: 100 },
   maxWaitForResetMs: { min: 0, max: 10 * MINUTE },
+  /**
+   * Floor of one minute: the gate exists to avoid hammering the quota endpoint,
+   * and a TTL below that would probe upstream on nearly every request. Ceiling
+   * of one hour keeps a reset from going unnoticed for too long.
+   */
+  quotaCacheTtlMs: { min: MINUTE, max: 60 * MINUTE },
 });
 
 const NUMERIC_KEYS = Object.keys(ROTATION_BOUNDS);
@@ -123,6 +142,10 @@ export function sanitizeRotationSettings(input) {
 
   if (Object.prototype.hasOwnProperty.call(input, "cooldownPerModel")) {
     out.cooldownPerModel = toBoolean(input.cooldownPerModel, true);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "quotaAwareAccounts")) {
+    out.quotaAwareAccounts = toBoolean(input.quotaAwareAccounts, true);
   }
 
   if (Object.prototype.hasOwnProperty.call(input, "onAllExhausted")) {

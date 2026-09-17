@@ -38,6 +38,20 @@ const GROUPS = [
         type: "toggle",
         hint: "On: only the failing model is locked. Off: the whole account is locked — correct for Codex, where every model shares one quota.",
       },
+      {
+        key: "quotaAwareAccounts",
+        label: "Check quota before selecting an account",
+        type: "toggle",
+        hint: "Codex only. Ask each account whether it still has quota (cached for the interval below) instead of discovering it from an upstream 429. A spent account is skipped until its quota comes back, so requests stop burning a round trip on a dead account.",
+      },
+      {
+        key: "quotaCacheTtlMs",
+        label: "Quota re-check interval",
+        type: "duration",
+        min: MINUTE,
+        max: HOUR,
+        hint: "How long a quota reading is trusted, and how long a spent account waits between re-checks. Lower picks up an early reset sooner at the cost of more quota calls.",
+      },
     ],
   },
   {
