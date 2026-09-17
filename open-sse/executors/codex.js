@@ -20,8 +20,17 @@ const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "m
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   "event: response.output_text.delta",
   "event: response.function_call_arguments.delta",
+  // Reasoning deltas are real user-visible output: the translator converts
+  // response.reasoning_summary_text.delta into reasoning_content (see
+  // open-sse/translator/response/openai-responses.js). Without these the peek
+  // buffers the WHOLE thinking phase before releasing a single byte, so TTFT
+  // equals the model's reasoning time (measured 22-80s) instead of ~3s.
+  "event: response.reasoning_summary_text.delta",
+  "event: response.reasoning_text.delta",
   '"type":"response.output_text.delta"',
   '"type":"response.function_call_arguments.delta"',
+  '"type":"response.reasoning_summary_text.delta"',
+  '"type":"response.reasoning_text.delta"',
 ];
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
