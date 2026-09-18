@@ -567,9 +567,19 @@ const SCHEMA_VALUE_KEYWORDS = ["items", "additionalProperties", "not", "contains
 const SCHEMA_ARRAY_KEYWORDS = ["anyOf", "oneOf", "allOf", "prefixItems"];
 
 /**
- * Schema co property nao khai bao trong `properties` ma thieu o `required`
- * khong (de quy). true => strict mode se bi upstream tu choi.
- * Truyen vao gia tri khong phai object (vd `additionalProperties: false`)
+ * Schema co vi pham quy tac strict mode cua OpenAI khong (de quy).
+ *
+ * Strict doi HAI dieu tren moi object, thieu mot trong hai la upstream tra
+ * `400 Invalid schema for response_format '<name>'`:
+ *   - moi ten trong `properties` phai xuat hien trong `required`
+ *   - `additionalProperties` phai duoc dat `false`
+ *
+ * Truoc day chi kiem dieu thu nhat, nen mot schema da `required` day du nhung
+ * thieu `additionalProperties` van duoc danh dau strict-compliant → mapper phat
+ * `strict: true` → 400 (do live tren `cx/gpt-5.6-luna`: thieu
+ * additionalProperties → 400, co → 200).
+ *
+ * Truyen vao gia tri khong phai object (vd chinh `additionalProperties: false`)
  * thi tra ve false.
  */
 function schemaMissesRequired(schema) {
@@ -577,6 +587,10 @@ function schemaMissesRequired(schema) {
   if (!schema || typeof schema !== "object") return false;
 
   const props = schema.properties;
+  const declaresObject = Array.isArray(schema.type)
+    ? schema.type.includes("object")
+    : schema.type === "object";
+
   if (props && typeof props === "object" && !Array.isArray(props)) {
     const names = Object.keys(props);
     if (names.length > 0) {
@@ -585,7 +599,12 @@ function schemaMissesRequired(schema) {
       for (const name of names) {
         if (!required.includes(name)) return true;
       }
+      // Nua thu hai cua luat strict: object phai cam key la.
+      if (schema.additionalProperties !== false) return true;
     }
+  } else if (declaresObject && schema.additionalProperties !== false) {
+    // Object khong khai bao `properties`: strict van doi cam key la.
+    return true;
   }
 
   for (const keyword of SCHEMA_MAP_KEYWORDS) {
