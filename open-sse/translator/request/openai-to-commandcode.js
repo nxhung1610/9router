@@ -25,21 +25,8 @@ import { parseDataUri, encodeDataUri } from "../concerns/image.js";
 // Kimi K2.6 / GLM-5.1 are unaffected; Anthropic-style `{type:"thinking"}` and
 // `{type:"redacted_thinking"}` blocks are REJECTED by the upstream ModelMessage[] schema —
 // only `{type:"reasoning", text}` is accepted, and the placeholder may be a single space.
-const REASONING_MODEL_PATTERN = /deepseek/i;
-const REASONING_BLOCK_TYPE = "reasoning";
-const REASONING_PLACEHOLDER = " ";
-
-function needsReasoningEcho(model) {
-  return REASONING_MODEL_PATTERN.test(model || "");
-}
-
-function reasoningBlock(message) {
-  const rc = message?.reasoning_content;
-  return {
-    type: REASONING_BLOCK_TYPE,
-    text: typeof rc === "string" && rc.length > 0 ? rc : REASONING_PLACEHOLDER,
-  };
-}
+// Upstream v0.5.81 now emits that block for every model (with `thought`/`reasoning` as extra
+// aliases), which subsumes the fork's deeper-only gate; see convertMessages().
 
 function flattenText(content) {
   if (content == null) return "";
@@ -157,17 +144,18 @@ function convertMessages(messages = [], model = "") {
 
     if (role === ROLE.ASSISTANT) {
       const blocks = [];
+      // Reasoning echo. Upstream v0.5.81 broadened this to EVERY model and added the
+      // `thought`/`reasoning` fallbacks (a plain `m.reasoning_content` miss was the old
+      // gap). The fork's deepseek-only `needsReasoningEcho()` arm sat right below and
+      // became a strict SUBSET of this condition, so keeping both emitted two identical
+      // `{type:"reasoning"}` blocks for any DeepSeek turn with tool calls. The fork arm
+      // is therefore gone; keep this one as the single source.
       const rc = m.reasoning_content || m.thought || m.reasoning;
       if (rc || (Array.isArray(m.tool_calls) && m.tool_calls.length > 0)) {
         blocks.push({ type: "reasoning", text: rc || " " });
       }
       const text = flattenText(m.content);
       const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
-      // DeepSeek thinking mode (see REASONING_BLOCK_TYPE note above): echo the turn's reasoning
-      // ahead of its tool calls, otherwise the next round-trip is rejected by upstream.
-      if (toolCalls.length > 0 && needsReasoningEcho(model)) {
-        blocks.push(reasoningBlock(m));
-      }
       if (text) blocks.push({ type: OPENAI_BLOCK.TEXT, text });
       for (const tc of toolCalls) {
         const fn = tc.function || {};
