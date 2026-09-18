@@ -333,7 +333,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
-  const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+  const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   // Account-wide exhaustion (GitHub monthly, or cooldownPerModel=false) locks every
   // model; otherwise only the model that actually failed is locked.
   const lockAllModels = Boolean(githubResetAtMs) || !rotation.cooldownPerModel;
