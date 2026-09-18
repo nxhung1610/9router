@@ -10,6 +10,7 @@ import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
+import { unfenceJsonChoices } from "../../utils/jsonFence.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 
 function parseToolArguments(value) {
@@ -373,6 +374,11 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       }
     }
   }
+
+  // JSON mode: drop a ```json fence the provider added around the object.
+  // A Claude-backed provider gets the schema as prompt text, so it may wrap the
+  // object; stripping here beats asking it not to fence (unreliable in practice).
+  unfenceJsonChoices(body, translatedResponse);
 
   reqLogger.logConvertedResponse(translatedResponse);
 
