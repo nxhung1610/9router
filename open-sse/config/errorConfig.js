@@ -54,12 +54,15 @@ const COOLDOWN = {
 /**
  * Unified error classification rules.
  * Checked top-to-bottom: text rules first (by order), then status rules.
- * Each rule: { text?, status?, cooldownMs?, cooldownKey?, backoff? }
+ * Each rule: { text?, status?, cooldownMs?, cooldownKey?, backoff?, noFallback? }
  *   - text: substring match (case-insensitive) on error message
  *   - status: HTTP status code match
  *   - cooldownMs: fixed cooldown duration (default)
  *   - cooldownKey: name of the rotation setting that overrides `cooldownMs`
  *   - backoff: true = use exponential backoff (rate limit)
+ *   - noFallback: true = the failure belongs to the CALLER's payload, so another
+ *     account would fail identically. Return the upstream response instead of
+ *     locking this account and walking the pool (see checkFallbackError).
  */
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
@@ -79,6 +82,25 @@ export const ERROR_RULES = [
   { status: 404, cooldownMs: COOLDOWN.long,  cooldownKey: "longCooldownMs" },
   { status: 429, backoff: true },
 ];
+
+/**
+ * Statuses that describe the REQUEST, not the account. A malformed payload
+ * (bad JSON schema, `json_object` without the word "json" in the prompt, an
+ * unsupported param, an oversized body) fails identically on every account, so
+ * retrying it across the pool burns quota to produce the same 4xx N times — and
+ * the relay then answers `503 rotation attempt cap reached`, hiding the caller's
+ * real error.
+ *
+ * Deliberately EXCLUDED: 401/402/403 (account auth/billing), 404 (model
+ * availability genuinely differs per account — e.g. a free Codex account without
+ * access to a model), 408/429 (worth another account), and all 5xx.
+ *
+ * Measured in production: 16 such rows in one 1000-row window, all HTTP 400 —
+ * `Invalid schema for response_format '<name>'` and `Response input messages
+ * must contain the word 'json'` — each costing a rotation walk.
+ */
+export const REQUEST_SHAPED_STATUSES = new Set([400, 413, 415, 422]);
+
 
 // Backward compat: COOLDOWN_MS object (used by index.js re-export)
 export const COOLDOWN_MS = {

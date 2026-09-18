@@ -78,6 +78,14 @@ export const ROTATION_DEFAULTS = Object.freeze({
    * reset is picked up in minutes rather than at the end of a month-long window.
    */
   quotaCacheTtlMs: 5 * MINUTE,
+  /**
+   * Return a request-shaped 4xx (400/413/415/422) straight to the client instead
+   * of locking the account and trying the next one. Such a failure belongs to the
+   * caller's payload and reproduces identically on every account, so rotating
+   * only burns pool quota to then answer `503 rotation attempt cap reached`.
+   * Turn off to restore the historical "walk the pool on any error" behaviour.
+   */
+  requestShapedNoRotation: true,
 });
 
 /** Inclusive bounds used to reject nonsense from the settings API / UI. */
@@ -146,6 +154,10 @@ export function sanitizeRotationSettings(input) {
 
   if (Object.prototype.hasOwnProperty.call(input, "quotaAwareAccounts")) {
     out.quotaAwareAccounts = toBoolean(input.quotaAwareAccounts, true);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "requestShapedNoRotation")) {
+    out.requestShapedNoRotation = toBoolean(input.requestShapedNoRotation, true);
   }
 
   if (Object.prototype.hasOwnProperty.call(input, "onAllExhausted")) {

@@ -1,6 +1,7 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
+import { REQUEST_SHAPED_STATUSES } from "open-sse/config/errorConfig.js";
 import { resolveRotationSettings, applyCooldownCap } from "open-sse/config/rotationSettings.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
@@ -282,6 +283,34 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   // GitHub premium-request exhaustion is account-wide until the next UTC month.
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
+
+  // A request-shaped 4xx (bad JSON schema, `json_object` with no "json" in the
+  // prompt, unsupported param) is the CALLER's error: every account returns the
+  // same 4xx. Locking this account and rotating would burn the whole pool to
+  // reproduce one failure and then answer `503 rotation attempt cap reached`,
+  // hiding the real status from the client. Hand the upstream response back
+  // untouched instead — no lock, no cooldown, no rotation.
+  //
+  // Checked AFTER the provider-reported resets: an absolute reset time is
+  // account-level evidence and wins over a status-code guess. 401/402/403/404
+  // stay rotatable (account auth/billing, per-account model access), as do
+  // 408/429 and every 5xx.
+  //
+  // `githubResetAtMs` is belt-and-braces: githubMonthlyResetMs only fires on 402,
+  // which is not in REQUEST_SHAPED_STATUSES, so that arm is unreachable today —
+  // it is kept so that adding a status to the set later cannot silently swallow
+  // the GitHub monthly-exhaustion path. Only the resetsAtMs arm is covered by a
+  // discriminating test.
+  const providerReportedReset = Boolean(resetsAtMs) && resetsAtMs > Date.now();
+  if (rotation.requestShapedNoRotation !== false
+      && REQUEST_SHAPED_STATUSES.has(status)
+      && !githubResetAtMs
+      && !providerReportedReset) {
+    const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
+    log.warn("AUTH", `${connName} returned request-shaped ${status} — not rotating (caller payload error)`);
+    return { shouldFallback: false, cooldownMs: 0, requestShaped: true };
+  }
+
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;

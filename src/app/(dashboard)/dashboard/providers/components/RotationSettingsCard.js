@@ -45,6 +45,12 @@ const GROUPS = [
         hint: "Codex only. Ask each account whether it still has quota (cached for the interval below) instead of discovering it from an upstream 429. A spent account is skipped until its quota comes back, so requests stop burning a round trip on a dead account.",
       },
       {
+        key: "requestShapedNoRotation",
+        label: "Don't rotate on a bad request",
+        type: "toggle",
+        hint: "On: a 400/413/415/422 caused by the caller's payload (bad JSON schema, json_object without the word \"json\") is returned as-is instead of locking the account and trying the next one. Off: restore walking the pool on any error — one bad request then burns up to \"Max accounts per request\" accounts and answers 503.",
+      },
+      {
         key: "quotaCacheTtlMs",
         label: "Quota re-check interval",
         type: "duration",
