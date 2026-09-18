@@ -249,7 +249,44 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   delete result.reasoning;
   delete result.client_metadata;
 
+  // Structured Output, chieu nguoc: Responses `text.format` -> Chat `response_format`.
+  // `text` khong phai field cua Chat Completions => phai xoa, neu khong no ro ra
+  // upstream nhu mot field la. Chi dien response_format khi client chua gui.
+  if (result.text !== undefined) {
+    const responseFormat = textFormatToResponseFormat(result.text);
+    if (responseFormat && result.response_format === undefined) {
+      result.response_format = responseFormat;
+    }
+    delete result.text;
+  }
+
   return result;
+}
+
+/**
+ * Responses API `text.format` -> Chat Completions `response_format`
+ * (ham nghich dao cua `applyResponseFormatToText`).
+ * Tra ve null khi format khong map duoc / thieu du lieu.
+ */
+function textFormatToResponseFormat(text) {
+  const fmt = text?.format;
+  if (!fmt) return null;
+  if (fmt.type === "json_schema") {
+    const schema = fmt.schema ?? fmt.json_schema?.schema;
+    if (!schema) return null;
+    return {
+      type: "json_schema",
+      json_schema: {
+        name: fmt.name || fmt.json_schema?.name || "response",
+        schema,
+        // Cung mot quy tac voi chieu di: khong bao gio gui strict=true cho
+        // schema bat kha thi (optional property thieu trong `required`).
+        strict: resolveStrict({ strict: fmt.strict ?? fmt.json_schema?.strict }, schema),
+      },
+    };
+  }
+  if (fmt.type === "json_object") return { type: "json_object" };
+  return null;
 }
 
 /**
@@ -328,6 +365,10 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     }
     delete out.max_tokens;
     delete out.max_completion_tokens;
+    // A hybrid client may send Responses-style input[] AND a Chat Completions
+    // response_format; map it too so the schema is not silently ignored.
+    applyResponseFormatToText(out, out.response_format);
+    delete out.response_format;
     return out;
   }
 
@@ -459,7 +500,113 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   if (body.service_tier !== undefined) result.service_tier = body.service_tier;
   if (body.prompt_cache_key !== undefined) result.prompt_cache_key = body.prompt_cache_key;
 
+  // Chat Completions `response_format` → Responses API `text.format`.
+  // Without this the field is dropped silently and the client's schema is never
+  // enforced (Responses API has no `response_format`).
+  // A client may also send the Responses-native `text.format` directly on the
+  // messages[] path — carry it through (it wins over response_format).
+  if (body.text !== undefined) result.text = body.text;
+  applyResponseFormatToText(result, body.response_format);
+  delete result.response_format; // Responses API rejects the Chat Completions field
+
   return result;
+}
+
+/**
+ * Map a Chat Completions `response_format` onto the Responses API `text.format`
+ * shape. Unknown / malformed values are ignored (no `text` is added), and an
+ * explicit `text.format` already present on the target wins.
+ */
+function applyResponseFormatToText(target, responseFormat) {
+  if (!responseFormat || typeof responseFormat !== "object") return target;
+  if (target.text !== undefined) return target;
+  const rf = responseFormat;
+  if (rf.type === "json_schema" && rf.json_schema?.schema) {
+    target.text = {
+      format: {
+        type: "json_schema",
+        name: rf.json_schema.name || "response",
+        strict: resolveStrict(rf.json_schema, rf.json_schema.schema),
+        schema: rf.json_schema.schema,
+      },
+    };
+  } else if (rf.type === "json_object") {
+    target.text = { format: { type: "json_object" } };
+  } else if (rf.type === "text") {
+    target.text = { format: { type: "text" } };
+  }
+  return target;
+}
+
+/**
+ * Quyet dinh `strict` cho Responses `text.format`.
+ *
+ * OpenAI strict mode doi `required` liet ke **moi** key trong `properties`;
+ * schema co property tuy chon se bi upstream tu choi:
+ *   400 "Invalid schema for response_format '<name>': In context=(),
+ *        'required' is required to be supplied and to be an array
+ *        including every key in properties."
+ * Loi 400 do KHONG phai loi tam thoi => gateway xoay account roi tra 503
+ * (bug "rotation attempt cap"), nen phai tranh tu dau.
+ *
+ * Quy tac (khop voi CLIProxyAPI da merge):
+ * - client gui `strict: false`        => false (ton trong y dinh)
+ * - client gui `strict: true`         => true  (client tu chiu trach nhiem)
+ * - client khong gui                  => strict CHI khi schema thoa duoc
+ *   (moi property deu nam trong `required`), nguoc lai ha xuong false
+ *   thay vi gui mot schema bat kha thi.
+ */
+function resolveStrict(jsonSchema, schema) {
+  if (jsonSchema?.strict === false) return false;
+  if (jsonSchema?.strict === true) return true;
+  return !schemaMissesRequired(schema);
+}
+
+const SCHEMA_MAP_KEYWORDS = ["$defs", "definitions", "properties", "patternProperties"];
+const SCHEMA_VALUE_KEYWORDS = ["items", "additionalProperties", "not", "contains", "propertyNames"];
+const SCHEMA_ARRAY_KEYWORDS = ["anyOf", "oneOf", "allOf", "prefixItems"];
+
+/**
+ * Schema co property nao khai bao trong `properties` ma thieu o `required`
+ * khong (de quy). true => strict mode se bi upstream tu choi.
+ * Truyen vao gia tri khong phai object (vd `additionalProperties: false`)
+ * thi tra ve false.
+ */
+function schemaMissesRequired(schema) {
+  if (Array.isArray(schema)) return schema.some(schemaMissesRequired);
+  if (!schema || typeof schema !== "object") return false;
+
+  const props = schema.properties;
+  if (props && typeof props === "object" && !Array.isArray(props)) {
+    const names = Object.keys(props);
+    if (names.length > 0) {
+      const required = Array.isArray(schema.required) ? schema.required : null;
+      if (!required) return true;
+      for (const name of names) {
+        if (!required.includes(name)) return true;
+      }
+    }
+  }
+
+  for (const keyword of SCHEMA_MAP_KEYWORDS) {
+    const child = schema[keyword];
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      for (const value of Object.values(child)) {
+        if (schemaMissesRequired(value)) return true;
+      }
+    }
+  }
+
+  for (const keyword of SCHEMA_VALUE_KEYWORDS) {
+    if (schema[keyword] !== undefined && schemaMissesRequired(schema[keyword])) return true;
+  }
+
+  for (const keyword of SCHEMA_ARRAY_KEYWORDS) {
+    const arr = schema[keyword];
+    if (Array.isArray(arr) && arr.some(schemaMissesRequired)) return true;
+  }
+
+  return false;
 }
 
 // Register both directions
