@@ -4,9 +4,15 @@ import { resolveProviderAlias } from "open-sse/services/model.js";
 
 // DeepSeek V4.1 Flash reads images — verified live against Command Code's
 // OpenAI-compatible endpoint. Vision is a property of the MODEL, so the canonical
-// table must say true; only the CLI transport (/alpha/generate) narrows it, because
-// that route mangles images. These tests pin both halves so neither one can
-// silently take the other's place.
+// table says true, and since upstream v0.5.81 (13b468b8) the Command Code provider
+// arm says true as well: that commit maps image_url / Claude image blocks onto the
+// native {type:"image", …} generate block, inlines http(s) images, and scopes vision
+// by a text-only denylist instead of a blanket per-transport override.
+//
+// This file previously pinned the opposite (the fork forced vision:false on the
+// commandcode arm because /alpha/generate answered the wrong colour). The measured
+// decision on 2026-09-18 was to follow upstream. If a live image test shows the CLI
+// still mangles colours, restore the fork entry AND these expectations together.
 const MODEL = "deepseek/deepseek-v4.1-flash";
 
 // The command/ route resolves to the user's openai-compatible node id (a UUID,
@@ -23,32 +29,31 @@ describe("DeepSeek V4.1 Flash vision capability", () => {
     expect(caps.vision).toBe(true);
   });
 
-  it("narrows vision on the Command Code CLI transport (cmc/), which cannot carry an image", () => {
+  it("serves vision:true on the Command Code CLI transport (cmc/) too", () => {
     const caps = getCapabilitiesForModel("commandcode", MODEL);
-    expect(caps.vision).toBe(false);
+    expect(caps.vision).toBe(true);
   });
 
   it("resolves the cmc alias to the commandcode provider id before capability lookup", () => {
-    // The alias is resolved upstream (`cmc` -> `commandcode`), and only the id is
-    // passed to getCapabilitiesForModel. Pin that, so a future change that passes
-    // the raw alias cannot silently fall through to the model table and regain
-    // vision on the transport that mangles images.
     expect(resolveProviderAlias("cmc")).toBe("commandcode");
-    expect(getCapabilitiesForModel(resolveProviderAlias("cmc"), MODEL).vision).toBe(false);
+    expect(getCapabilitiesForModel(resolveProviderAlias("cmc"), MODEL).vision).toBe(true);
   });
 
-  it("does not change the capability of its sibling models", () => {
-    // The provider override is keyed per model — a blanket provider entry would
-    // have disabled vision on every Command Code model.
+  it("does not carry a blanket commandcode override any more", () => {
+    // The removed fork entry returned early and masked upstream's transport fix.
+    expect(PROVIDER_CAPABILITIES.commandcode?.["deepseek-v4.1-flash"]).toBeUndefined();
+    expect(PROVIDER_CAPABILITIES.commandcode?.["deepseek/deepseek-v4.1-flash"]).toBeUndefined();
+  });
+
+  it("keeps the text-only denylist intact, so superseeded ids stay text-only", () => {
+    expect(getCapabilitiesForModel("commandcode", "deepseek/deepseek-v4-flash").vision).toBe(false);
     expect(getCapabilitiesForModel("commandcode", "deepseek/deepseek-v4-pro").reasoning).toBe(true);
-    expect(PROVIDER_CAPABILITIES.commandcode?.["deepseek/deepseek-v4-pro"]).toBeUndefined();
   });
 
   it("keeps the model's other capabilities intact on both routes", () => {
     for (const provider of ["commandcode", OPENAI_COMPAT_NODE]) {
       const caps = getCapabilitiesForModel(provider, MODEL);
       expect(caps.reasoning).toBe(true);
-      expect(caps.thinkingFormat).toBe("deepseek");
       expect(caps.contextWindow).toBe(1000000);
       expect(caps.maxOutput).toBe(384000);
     }

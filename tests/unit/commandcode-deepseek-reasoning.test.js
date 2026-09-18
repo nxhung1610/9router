@@ -79,12 +79,27 @@ describe("openaiToCommandCodeRequest — DeepSeek reasoning echo", () => {
     for (const a of assistants) expect(a.content[0].type).toBe("reasoning");
   });
 
-  it("does not touch non-DeepSeek models", () => {
+  it("echoes the block for non-DeepSeek models too (upstream v0.5.81 widened this)", () => {
+    // This test used to pin the opposite — the fork limited the echo to DeepSeek, so a
+    // Kimi turn got no reasoning block. Upstream 092c84ea now emits it for every model
+    // (with `thought`/`reasoning` as extra aliases), which is the behaviour adopted
+    // here: the block only echoes reasoning the CLIENT already sent, and a turn with
+    // tool calls always gets at least the " " placeholder.
     const out = openaiToCommandCodeRequest(KIMI, { messages: messagesFor() }, true);
     const types = out.params.messages.find((m) => m.role === "assistant").content.map((b) => b.type);
 
-    expect(types).not.toContain("reasoning");
+    expect(types).toContain("reasoning");
     expect(types).toContain("tool-call");
+  });
+
+  it("emits exactly ONE reasoning block per turn — no duplicate from the old fork arm", () => {
+    // The merge left upstream's arm (every model) directly above the fork's
+    // deepseek-only arm, which had become a strict subset: a DeepSeek turn produced
+    // two identical blocks. Pin the count, not just the presence.
+    const out = openaiToCommandCodeRequest(DEEPSEEK, { messages: messagesFor() }, true);
+    const assistant = out.params.messages.find((m) => m.role === "assistant");
+    const reasoningBlocks = assistant.content.filter((b) => b.type === "reasoning");
+    expect(reasoningBlocks).toHaveLength(1);
   });
 
   it("leaves assistant turns without tool calls alone", () => {

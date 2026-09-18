@@ -28,7 +28,7 @@ const bodyWithImage = () => ({
 const imagesLeft = (body) =>
   body.messages[0].content.filter((b) => b.type === "image_url" || b.type === "image");
 
-describe("image survives the strip pass only on the route that can carry it", () => {
+describe("image survives the strip pass on the route that can carry it", () => {
   it("keeps the image on the OpenAI-compatible route (command/)", () => {
     const caps = getCapabilitiesForModel(OPENAI_COMPAT_NODE, MODEL);
     const body = bodyWithImage();
@@ -36,17 +36,28 @@ describe("image survives the strip pass only on the route that can carry it", ()
     expect(imagesLeft(body)).toHaveLength(1);
   });
 
-  it("strips the image on the Command Code CLI transport (cmc/), which mangles it", () => {
+  it("keeps the image on the Command Code CLI transport (cmc/) since v0.5.81", () => {
+    // Upstream 13b468b8 gave the CLI transport native image blocks plus base64
+    // inlining, so the strip pass no longer removes the image here. The fork used to
+    // strip it because /alpha/generate returned the wrong colour; that override is
+    // gone. A live colour test decides whether it comes back.
     const caps = getCapabilitiesForModel("commandcode", MODEL);
+    const body = bodyWithImage();
+    stripUnsupportedModalities(body, FORMATS.OPENAI, caps);
+    expect(imagesLeft(body)).toHaveLength(1);
+  });
+
+  it("still strips the image for a model on the CLI text-only denylist", () => {
+    const caps = getCapabilitiesForModel("commandcode", "deepseek/deepseek-v4-flash");
     const body = bodyWithImage();
     stripUnsupportedModalities(body, FORMATS.OPENAI, caps);
     expect(imagesLeft(body)).toHaveLength(0);
   });
 
-  it("keeps the text of the request in both cases", () => {
-    for (const provider of [OPENAI_COMPAT_NODE, "commandcode"]) {
+  it("keeps the text of the request in every case", () => {
+    for (const [provider, model] of [[OPENAI_COMPAT_NODE, MODEL], ["commandcode", MODEL], ["commandcode", "deepseek/deepseek-v4-flash"]]) {
       const body = bodyWithImage();
-      stripUnsupportedModalities(body, FORMATS.OPENAI, getCapabilitiesForModel(provider, MODEL));
+      stripUnsupportedModalities(body, FORMATS.OPENAI, getCapabilitiesForModel(provider, model));
       expect(JSON.stringify(body)).toContain("what colour is this image?");
     }
   });

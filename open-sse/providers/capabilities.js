@@ -158,19 +158,15 @@ const CODEX_GPT_56_DEFAULT_CAPS = { vision: true, reasoning: true, search: true,
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
-  // Command Code's CLI transport (/alpha/generate) cannot deliver an image: the
-  // request translator rewrites every image block to the literal text
-  // "[image omitted]" (openai-to-commandcode.js), and sending a correctly shaped
-  // Anthropic image block straight to that endpoint came back with the WRONG
-  // colour (red -> "black", blue -> "white"), so upstream is not decoding it
-  // either. The model itself does read images — see "deepseek-v4.1-flash" in
-  // MODEL_CAPABILITIES — so the limit is narrowed here, per transport, instead of
-  // disabling vision for the model everywhere.
-  // The /provider/v1 OpenAI-compatible node ("command/") is unaffected and keeps
-  // vision:true. Restate every field: a provider match returns early.
-  "commandcode": {
-    "deepseek-v4.1-flash": { vision: false, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
-  },
+  // NOTE (fork): the `commandcode` entry used to force
+  // `deepseek-v4.1-flash: { vision: false }` because a correctly shaped image block
+  // sent to the CLI transport (/alpha/generate) came back with the wrong colour
+  // (red -> "black"). Upstream v0.5.81 (13b468b8) instead fixed the transport: it
+  // maps image_url / Claude image blocks onto the native {type:"image", …} generate
+  // block and inlines http(s) images, and scopes vision by a text-only denylist
+  // (`COMMANDCODE_TEXT_ONLY`). The fork entry was removed so its early return cannot
+  // mask that fix. Whether the CLI now decodes images correctly is being measured
+  // live; if it still mangles them, restore this entry and its tests.
   // NVIDIA NIM is OpenAI-compatible → rejects MiniMax/GLM native `thinking` field.
   // Force openai reasoning_effort format for its reasoning models. #issue
   "nvidia": {
