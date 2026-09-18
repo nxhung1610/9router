@@ -158,15 +158,18 @@ const CODEX_GPT_56_DEFAULT_CAPS = { vision: true, reasoning: true, search: true,
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
-  // NOTE (fork): the `commandcode` entry used to force
-  // `deepseek-v4.1-flash: { vision: false }` because a correctly shaped image block
-  // sent to the CLI transport (/alpha/generate) came back with the wrong colour
-  // (red -> "black"). Upstream v0.5.81 (13b468b8) instead fixed the transport: it
-  // maps image_url / Claude image blocks onto the native {type:"image", …} generate
-  // block and inlines http(s) images, and scopes vision by a text-only denylist
-  // (`COMMANDCODE_TEXT_ONLY`). The fork entry was removed so its early return cannot
-  // mask that fix. Whether the CLI now decodes images correctly is being measured
-  // live; if it still mangles them, restore this entry and its tests.
+  // No `commandcode` entry: the fork used to force
+  // `deepseek-v4.1-flash: { vision: false }` on the theory that the CLI transport
+  // (/alpha/generate) cannot carry an image. That held on 0.5.75 only because the
+  // request translator rewrote each image block to the literal "[image omitted]" —
+  // the model never saw the picture. Upstream v0.5.81 (13b468b8) fixed the transport
+  // (native {type:"image",…} generate blocks, http(s) inlining, COMMANDCODE_TEXT_ONLY
+  // scoping), so the override is gone and this table defers to upstream.
+  // Measured live on v0.5.81 (540e7abb) with solid 256x256 PNGs and
+  // "What single colour fills this image?": red 4/5, green 4/5, blue 4/5 — and
+  // prompt_tokens rises by 184 with the image attached, proving it reaches the model.
+  // (A 64x64 image with max_tokens<=40 looks like a total failure: the reasoning pass
+  // eats the budget, finish_reason=length, content="". Do not measure vision that way.)
   // NVIDIA NIM is OpenAI-compatible → rejects MiniMax/GLM native `thinking` field.
   // Force openai reasoning_effort format for its reasoning models. #issue
   "nvidia": {
