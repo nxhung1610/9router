@@ -319,6 +319,9 @@ async function getDispatcher(proxyUrl) {
 function getSocksProxyAgent(proxyUrl) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) return null;
+  // Resolve destination hostnames at the proxy, not in the container. The
+  // SOCKS pool's local DNS path can hit the host's intercepted/stale resolver.
+  const remoteDnsUrl = normalized.replace(/^socks5:/i, "socks5h:");
 
   if (!socksProxyAgents.has(normalized)) {
     if (socksProxyAgents.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
@@ -326,7 +329,7 @@ function getSocksProxyAgent(proxyUrl) {
       socksProxyAgents.get(oldestKey)?.destroy();
       socksProxyAgents.delete(oldestKey);
     }
-    socksProxyAgents.set(normalized, new SocksProxyAgent(normalized));
+    socksProxyAgents.set(normalized, new SocksProxyAgent(remoteDnsUrl));
   }
   return socksProxyAgents.get(normalized);
 }
