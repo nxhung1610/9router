@@ -1,9 +1,13 @@
 import { Readable } from "stream";
+import http from "http";
+import https from "https";
+import { SocksProxyAgent } from "socks-proxy-agent";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
+const socksProxyAgents = new Map();
 
 // ─── JA3 + geo-aware fingerprinting ───────────────────────────────
 // Only for WAF hosts via proxy; Grok Build stays native (grok-shell).
@@ -312,6 +316,63 @@ async function getDispatcher(proxyUrl) {
   return proxyDispatchers.get(normalized);
 }
 
+function getSocksProxyAgent(proxyUrl) {
+  const normalized = normalizeProxyUrl(proxyUrl);
+  if (!normalized) return null;
+
+  if (!socksProxyAgents.has(normalized)) {
+    if (socksProxyAgents.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
+      const oldestKey = socksProxyAgents.keys().next().value;
+      socksProxyAgents.get(oldestKey)?.destroy();
+      socksProxyAgents.delete(oldestKey);
+    }
+    socksProxyAgents.set(normalized, new SocksProxyAgent(normalized));
+  }
+  return socksProxyAgents.get(normalized);
+}
+
+function toNodeHeaders(headers) {
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  return { ...(headers || {}) };
+}
+
+function safeProxyErrorMessage(error) {
+  return String(error?.message || error).replace(/(socks5h?:\/\/)[^\s@]+@/gi, "$1[REDACTED]@");
+}
+
+/** Route fetch-compatible requests through SOCKS5 using Node's HTTP agent. */
+function fetchViaSocksProxy(targetUrl, options, proxyUrl) {
+  const parsedUrl = new URL(targetUrl);
+  const transport = parsedUrl.protocol === "https:" ? https : parsedUrl.protocol === "http:" ? http : null;
+  if (!transport) return Promise.reject(new Error(`Unsupported SOCKS proxy target protocol: ${parsedUrl.protocol}`));
+
+  return new Promise((resolve, reject) => {
+    const req = transport.request(parsedUrl, {
+      method: options.method || "GET",
+      headers: toNodeHeaders(options.headers),
+      agent: getSocksProxyAgent(proxyUrl),
+      signal: options.signal,
+    }, (res) => {
+      const responseHeaders = new Headers();
+      for (const [name, value] of Object.entries(res.headers)) {
+        if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, String(item)));
+        else if (value != null) responseHeaders.set(name, String(value));
+      }
+      const status = res.statusCode || 502;
+      const hasNoBody = [204, 205, 304].includes(status) || (options.method || "GET").toUpperCase() === "HEAD";
+      const responseBody = hasNoBody ? null : Readable.toWeb(res);
+      resolve(new Response(responseBody, {
+        status,
+        statusText: res.statusMessage || "",
+        headers: responseHeaders,
+      }));
+    });
+    req.once("error", reject);
+    if (options.body != null) req.write(options.body);
+    req.end();
+  });
+}
+
 /**
  * Create HTTPS request with manual socket connection (bypass DNS)
  */
@@ -396,6 +457,22 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
   const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
   const proxyUrl = connectionProxyUrl || envProxyUrl;
+
+  if (proxyUrl && /^socks5h?:/i.test(proxyUrl)) {
+    const targetHost = (() => { try { return new URL(targetUrl).hostname; } catch { return "unknown"; } })();
+    try {
+      const response = await fetchViaSocksProxy(targetUrl, options, proxyUrl);
+      dbg("PROXY", `SOCKS5 tunnel completed for ${targetHost} | status=${response.status}`);
+      return response;
+    } catch (proxyError) {
+      const errorMessage = safeProxyErrorMessage(proxyError);
+      if (proxyOptions?.strictProxy === true) {
+        throw new Error(`[ProxyFetch] SOCKS5 proxy required but failed (strictProxy=true): ${errorMessage}`);
+      }
+      console.warn(`[ProxyFetch] SOCKS5 proxy failed for ${targetHost}, falling back to direct: ${errorMessage}`);
+      return originalFetch(url, options);
+    }
+  }
 
   // Geo lookup for WAF hosts via proxy (VN/US lang + tz)
   if (_isWafHost && proxyUrl) {

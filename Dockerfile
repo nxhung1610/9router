@@ -67,6 +67,15 @@ COPY --from=builder /app/node_modules/next ./node_modules/next
 COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
 # node-machine-id is createRequire-loaded at runtime; tracing omits it.
 COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
+# Open SSE is copied as a separate child process; Next standalone tracing does not
+# include its SOCKS agent, so copy the agent and its runtime dependency chain.
+COPY --from=builder /app/node_modules/socks-proxy-agent ./node_modules/socks-proxy-agent
+COPY --from=builder /app/node_modules/agent-base ./node_modules/agent-base
+COPY --from=builder /app/node_modules/socks ./node_modules/socks
+COPY --from=builder /app/node_modules/ip-address ./node_modules/ip-address
+COPY --from=builder /app/node_modules/smart-buffer ./node_modules/smart-buffer
+COPY --from=builder /app/node_modules/debug ./node_modules/debug
+COPY --from=builder /app/node_modules/ms ./node_modules/ms
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
