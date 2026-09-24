@@ -344,7 +344,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
-    strictProxy: (provider === "codex" && credentials?.providerSpecificData?.strictProxy === true)
+    strictProxy: credentials?.providerSpecificData?.strictProxy === true
       || (provider === "opencode" && credentials?.providerSpecificData?.connectionProxyEnabled === true),
   };
 
