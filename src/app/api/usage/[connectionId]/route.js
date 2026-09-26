@@ -145,14 +145,16 @@ export async function GET(request, { params }) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 
-    // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
+    // Codex account actions are bound to their assigned egress. Never permit a
+    // direct fallback for usage reads or OAuth refresh.
     const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
     const proxyOptions = {
       connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
       connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
       connectionNoProxy: proxyConfig.connectionNoProxy || "",
       vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-      strictProxy: false,
+      strictProxy: connection.provider === "codex" || proxyConfig.strictProxy === true,
+      requireAccountProxy: connection.provider === "codex",
     };
 
     // Refresh credentials only for OAuth connections (apikey has no token refresh)

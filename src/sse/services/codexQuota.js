@@ -176,7 +176,9 @@ function buildProxyOptions(cfg) {
     connectionProxyUrl: cfg?.connectionProxyUrl || "",
     connectionNoProxy: cfg?.connectionNoProxy || "",
     vercelRelayUrl: cfg?.vercelRelayUrl || "",
-    strictProxy: cfg?.strictProxy === true,
+    // Account quota probes must use the assigned account proxy or fail closed.
+    strictProxy: true,
+    requireAccountProxy: true,
   };
 }
 

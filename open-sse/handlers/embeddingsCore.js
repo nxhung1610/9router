@@ -2,6 +2,8 @@ import { createErrorResult, parseUpstreamError, formatProviderError } from "../u
 import { HTTP_STATUS, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { getExecutor } from "../executors/index.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { getEmbeddingAdapter } from "./embeddingProviders/index.js";
 
 /**
@@ -59,16 +61,29 @@ export async function handleEmbeddingsCore({
 
   log?.debug?.("EMBEDDINGS", `${provider.toUpperCase()} | ${model} | input_type=${Array.isArray(input) ? `array[${input.length}]` : "string"}`);
 
+  const effectiveProxy = provider === "codex" ? await resolveConnectionProxyConfig(credentials?.providerSpecificData || {}) : (credentials?.providerSpecificData || {});
+  const proxyOptions = {
+    connectionProxyEnabled: effectiveProxy.connectionProxyEnabled === true,
+    connectionProxyUrl: effectiveProxy.connectionProxyUrl || "",
+    connectionNoProxy: effectiveProxy.connectionNoProxy || "",
+    vercelRelayUrl: effectiveProxy.vercelRelayUrl || "",
+    strictProxy: provider === "codex" || effectiveProxy.strictProxy === true,
+    requireAccountProxy: provider === "codex",
+  };
+
   let providerResponse;
   try {
-    providerResponse = await fetch(url, {
+    const requestOptions = {
       method: "POST",
       headers,
       body: JSON.stringify(requestBody),
       ...(typeof AbortSignal?.timeout === "function"
         ? { signal: AbortSignal.timeout(FETCH_CONNECT_TIMEOUT_MS) }
         : {}),
-    });
+    };
+    providerResponse = provider === "codex"
+      ? await proxyAwareFetch(url, requestOptions, proxyOptions)
+      : await fetch(url, requestOptions);
   } catch (error) {
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("EMBEDDINGS", `Fetch error: ${errMsg}`);
@@ -83,7 +98,7 @@ export async function handleEmbeddingsCore({
       providerResponse.status === HTTP_STATUS.FORBIDDEN)
   ) {
     const newCredentials = await refreshWithRetry(
-      () => executor.refreshCredentials(credentials, log),
+      () => executor.refreshCredentials(credentials, log, proxyOptions),
       3,
       log
     );
@@ -96,11 +111,14 @@ export async function handleEmbeddingsCore({
       try {
         const retryHeaders = adapter.buildHeaders(credentials, ctx);
         const retryUrl = adapter.buildUrl(model, credentials, ctx);
-        providerResponse = await fetch(retryUrl, {
+        const retryOptions = {
           method: "POST",
           headers: retryHeaders,
           body: JSON.stringify(requestBody),
-        });
+        };
+        providerResponse = provider === "codex"
+          ? await proxyAwareFetch(retryUrl, retryOptions, proxyOptions)
+          : await fetch(retryUrl, retryOptions);
       } catch {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
       }

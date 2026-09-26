@@ -97,6 +97,70 @@ describe("proxyAwareFetch SOCKS5 routing", () => {
     expect(targetRequests).toBe(1);
   });
 
+  it("rejects an account-isolated request with no assigned proxy before direct fetch", async () => {
+    let directRequests = 0;
+    const target = http.createServer((_req, res) => {
+      directRequests++;
+      res.end("direct");
+    });
+    const targetPort = await listen(target);
+
+    await expect(proxyAwareFetch(`http://127.0.0.1:${targetPort}/probe`, {
+      method: "GET",
+    }, { strictProxy: true, requireAccountProxy: true })).rejects.toThrow(/no connection proxy is configured/);
+
+    expect(directRequests).toBe(0);
+  });
+
+  it("still refuses when only a shared env proxy is available", async () => {
+    let directRequests = 0;
+    const target = http.createServer((_req, res) => {
+      directRequests++;
+      res.end("direct");
+    });
+    const targetPort = await listen(target);
+    const envKeys = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+    const savedEnv = envKeys.map((key) => [key, process.env[key]]);
+    const sharedProxy = createSocks5TunnelServer();
+    const sharedProxyPort = await listen(sharedProxy);
+    for (const key of envKeys) process.env[key] = `socks5://127.0.0.1:${sharedProxyPort}`;
+
+    try {
+      await expect(proxyAwareFetch(`http://127.0.0.1:${targetPort}/probe`, {
+        method: "GET",
+      }, { strictProxy: true, requireAccountProxy: true })).rejects.toThrow(/no connection proxy is configured/);
+      expect(directRequests).toBe(0);
+    } finally {
+      for (const [key, value] of savedEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("rejects account-isolated requests that match noProxy instead of bypassing", async () => {
+    let directRequests = 0;
+    const target = http.createServer((_req, res) => {
+      directRequests++;
+      res.end("direct");
+    });
+    const targetPort = await listen(target);
+    const socks = createSocks5TunnelServer();
+    const proxyPort = await listen(socks);
+
+    await expect(proxyAwareFetch(`http://127.0.0.1:${targetPort}/probe`, {
+      method: "GET",
+    }, {
+      connectionProxyEnabled: true,
+      connectionProxyUrl: `socks5://127.0.0.1:${proxyPort}`,
+      connectionNoProxy: "127.0.0.1",
+      strictProxy: true,
+      requireAccountProxy: true,
+    })).rejects.toThrow(/target matches noProxy/);
+
+    expect(directRequests).toBe(0);
+  });
+
   it("fails closed instead of silently going direct when a strict SOCKS proxy is down", async () => {
     let directRequests = 0;
     const target = http.createServer((_req, res) => {
@@ -114,6 +178,7 @@ describe("proxyAwareFetch SOCKS5 routing", () => {
       connectionProxyEnabled: true,
       connectionProxyUrl: `socks5://127.0.0.1:${proxyPort}`,
       strictProxy: true,
+      requireAccountProxy: true,
     })).rejects.toThrow(/SOCKS5 proxy required but failed/);
 
     expect(directRequests).toBe(0);

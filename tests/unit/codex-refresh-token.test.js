@@ -9,7 +9,16 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch: (...args) => global.fetch(...args.slice(0, 2)),
+}));
+
 const originalFetch = global.fetch;
+const testProxy = {
+  connectionProxyEnabled: true,
+  connectionProxyUrl: "http://127.0.0.1:1",
+  strictProxy: true,
+};
 
 describe("Codex Refresh Token", () => {
   beforeEach(() => {
@@ -41,7 +50,7 @@ describe("Codex Refresh Token", () => {
       });
 
       const { refreshCodexToken } = await import("../../open-sse/services/tokenRefresh.js");
-      const result = await refreshCodexToken("old-refresh-token", null);
+      const result = await refreshCodexToken("old-refresh-token", testProxy);
 
       expect(result.refreshToken).toBe("rotated-refresh-token");
       expect(result.accessToken).toBe("new-access");
@@ -59,7 +68,7 @@ describe("Codex Refresh Token", () => {
             grant_type: "refresh_token",
             refresh_token: "old-refresh-token",
           }),
-        })
+        }),
       );
     });
 
@@ -70,7 +79,7 @@ describe("Codex Refresh Token", () => {
       });
 
       const { refreshCodexToken } = await import("../../open-sse/services/tokenRefresh.js");
-      const result = await refreshCodexToken("old-refresh-token-without-rotation", null);
+      const result = await refreshCodexToken("old-refresh-token-without-rotation", testProxy);
 
       expect(result.refreshToken).toBe("old-refresh-token-without-rotation");
     });
@@ -90,7 +99,8 @@ describe("Codex Refresh Token", () => {
         connectionId: "codex-1",
         refreshToken: "old-refresh-token",
         idToken: "old-id-token",
-      }, null);
+        providerSpecificData: testProxy,
+      }, null, testProxy);
 
       expect(result.accessToken).toBe("new-access");
       expect(result.refreshToken).toBe("rotated-refresh-token");
@@ -130,11 +140,12 @@ describe("Codex Refresh Token", () => {
       const credentials = {
         connectionId: "codex-single-flight",
         refreshToken: "old-refresh-token",
+        providerSpecificData: testProxy,
       };
 
       const [first, second] = await Promise.all([
-        refreshProviderCredentials("codex", credentials, null),
-        refreshProviderCredentials("codex", credentials, null),
+        refreshProviderCredentials("codex", credentials, null, testProxy),
+        refreshProviderCredentials("codex", credentials, null, testProxy),
       ]);
 
       expect(first.accessToken).toBe("new-access");

@@ -3,6 +3,10 @@ import { getModelsByProviderId, getModelType, isValidModel } from "../../open-ss
 import { getModelInfoCore } from "../../open-sse/services/model.js";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch: (url, options) => global.fetch(url, options),
+}));
+
 const models = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"];
 
 afterEach(() => vi.unstubAllGlobals());

@@ -1,5 +1,6 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { refreshCodexToken } from "@/sse/services/tokenRefresh";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
@@ -247,7 +248,20 @@ async function refreshOAuthToken(connection) {
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
     }
 
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
+    if (provider === "codex") {
+      const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+      const proxyOptions = {
+        connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
+        connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
+        connectionNoProxy: proxyConfig.connectionNoProxy || "",
+        vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
+        strictProxy: true,
+        requireAccountProxy: true,
+      };
+      return await refreshCodexToken(connection.refreshToken, proxyOptions);
+    }
+
+    if (provider === "grok-cli" || provider === "xai") {
       return await refreshProviderCredentials(provider, connection, console);
     }
 
@@ -342,7 +356,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
 
   const tokenExpired = isTokenExpired(connection);
   if (config.refreshable && tokenExpired && connection.refreshToken) {
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refreshOAuthToken(connection, effectiveProxy);
     if (tokens) {
       accessToken = tokens.accessToken;
       refreshed = true;
@@ -363,7 +377,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     if (initial.valid) return { valid: true, error: null, refreshed, newTokens };
 
     if (initial.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
+      const tokens = await refreshOAuthToken(connection, effectiveProxy);
       if (tokens?.accessToken) {
         const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxy);
         if (retry.valid) return { valid: true, error: null, refreshed: true, newTokens: tokens };
@@ -389,7 +403,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
       return initial;
     }
 
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refreshOAuthToken(connection, effectiveProxy);
     if (!tokens?.accessToken) {
       return { valid: false, error: "Token invalid or revoked", refreshed: false };
     }
@@ -423,7 +437,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     }
 
     if (res.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
+      const tokens = await refreshOAuthToken(connection, effectiveProxy);
       if (tokens) {
         const retryUrl = config.buildUrl ? config.buildUrl(tokens.accessToken) : testUrl;
         const retryHeaders = config.noAuth
@@ -469,6 +483,10 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
   }
 
   if (!effectiveProxy?.connectionProxyEnabled || !effectiveProxy?.connectionProxyUrl) {
+    if (effectiveProxy?.strictProxy) {
+      const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
+      return proxyAwareFetch(url, options, effectiveProxy);
+    }
     return fetch(url, options);
   }
 
@@ -477,6 +495,8 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
     connectionProxyEnabled: true,
     connectionProxyUrl: effectiveProxy.connectionProxyUrl,
     connectionNoProxy: effectiveProxy.connectionNoProxy || "",
+    strictProxy: effectiveProxy.strictProxy === true,
+    requireAccountProxy: effectiveProxy.requireAccountProxy === true,
   });
 }
 
@@ -875,7 +895,11 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
-  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const effectiveProxyRaw = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  // Codex account probes are account actions: they must use that account's proxy.
+  const effectiveProxy = connection.provider === "codex"
+    ? { ...effectiveProxyRaw, strictProxy: true, requireAccountProxy: true }
+    : effectiveProxyRaw;
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });

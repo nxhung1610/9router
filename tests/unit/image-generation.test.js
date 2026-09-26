@@ -12,6 +12,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch: (url, options) => global.fetch(url, options),
+}));
+
 const originalFetch = global.fetch;
 
 describe("handleImageGenerationCore", () => {

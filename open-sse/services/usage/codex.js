@@ -104,6 +104,10 @@ function getCodexSparkRateLimit(data) {
   }) || null;
 }
 
+function requireCodexAccountProxy(proxyOptions) {
+  return { ...(proxyOptions || {}), strictProxy: true, requireAccountProxy: true };
+}
+
 export async function getCodexUsage(accessToken, proxyOptions = null) {
   try {
     const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
@@ -112,7 +116,7 @@ export async function getCodexUsage(accessToken, proxyOptions = null) {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
       },
-    }, proxyOptions);
+    }, requireCodexAccountProxy(proxyOptions));
 
     if (!response.ok) {
       return { message: `Codex connected. Usage API temporarily unavailable (${response.status}).` };
@@ -159,7 +163,7 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
   const response = await proxyAwareFetch(CODEX_CONFIG.resetCreditsUrl, {
     method: "GET",
     headers,
-  }, proxyOptions);
+  }, requireCodexAccountProxy(proxyOptions));
 
   let data = null;
   try {
@@ -204,7 +208,7 @@ export async function consumeCodexRateLimitResetCredit(accessToken, redeemReques
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ redeem_request_id: redeemRequestId }),
-    }, proxyOptions);
+    }, requireCodexAccountProxy(proxyOptions));
 
     const text = await response.text();
     data = text ? JSON.parse(text) : null;

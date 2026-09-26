@@ -437,6 +437,26 @@ async function createBypassRequest(parsedUrl, realIP, options) {
 
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
+  // Account-isolated routes (Codex accounts) must leave through the proxy assigned
+  // to that account. A missing connection proxy/relay is a refusal, not a fallback:
+  // the host's own egress (env proxy or direct) is shared across accounts and would
+  // break per-account isolation. noProxy may not punch a hole in that route either.
+  if (proxyOptions?.requireAccountProxy === true) {
+    const hasConnectionProxy = (proxyOptions.connectionProxyEnabled === true || proxyOptions.enabled === true)
+      && !!normalizeString(proxyOptions.connectionProxyUrl ?? proxyOptions.url);
+    const hasRelay = !!normalizeString(proxyOptions.vercelRelayUrl);
+    if (!hasConnectionProxy && !hasRelay) {
+      throw new Error("[ProxyFetch] Account-isolated proxy required but no connection proxy is configured");
+    }
+    const noProxy = normalizeString(proxyOptions.connectionNoProxy ?? proxyOptions.noProxy);
+    if (noProxy && shouldBypassByNoProxy(targetUrl, noProxy)) {
+      throw new Error("[ProxyFetch] Account-isolated proxy required but target matches noProxy");
+    }
+  }
+  // strictProxy: a transport failure must surface instead of silently retrying
+  // direct. It does not by itself demand a proxy — providers that use env proxies
+  // (Qoder) rely on that distinction.
+  const mustNotFallBackToDirect = proxyOptions?.strictProxy === true || proxyOptions?.requireAccountProxy === true;
   // Geo-aware Accept-Language for WAF hosts via proxy
   let geoExtra = {};
   const _ja3Host = (() => { try { return new URL(targetUrl).hostname; } catch { return ""; } })();
@@ -469,7 +489,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       return response;
     } catch (proxyError) {
       const errorMessage = safeProxyErrorMessage(proxyError);
-      if (proxyOptions?.strictProxy === true) {
+      if (mustNotFallBackToDirect) {
         throw new Error(`[ProxyFetch] SOCKS5 proxy required but failed (strictProxy=true): ${errorMessage}`);
       }
       console.warn(`[ProxyFetch] SOCKS5 proxy failed for ${targetHost}, falling back to direct: ${errorMessage}`);
@@ -504,7 +524,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         const dispatcher = await getDispatcher(proxyUrl);
         return await originalFetch(url, { ...options, dispatcher });
       } catch (proxyError) {
-        if (proxyOptions?.strictProxy === true) {
+        if (mustNotFallBackToDirect) {
           throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
         }
         console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
@@ -525,8 +545,8 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       const dispatcher = await getDispatcher(proxyUrl);
       return await originalFetch(url, { ...options, dispatcher });
     } catch (proxyError) {
-      // If strictProxy is enabled, fail hard instead of falling back to direct
-      if (proxyOptions?.strictProxy === true) {
+      // Never fall back to the host's egress for account-isolated routes
+      if (mustNotFallBackToDirect) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);

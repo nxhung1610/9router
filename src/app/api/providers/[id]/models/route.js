@@ -10,6 +10,7 @@ import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { resolveClineModels, resolveClinepassModels } from "open-sse/services/clinepassModels.js";
@@ -92,6 +93,19 @@ const getStaticProviderModels = (providerId) =>
 // Receives a `fetchFn(token)` and returns parsed models or throws.
 const buildOAuthResolver = ({ refreshFn, fetchFn, parseFn, errorLabel }) => async (connection) => {
   const { accessToken, refreshToken } = connection;
+  const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const proxyOptions = {
+    connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
+    connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
+    connectionNoProxy: proxyConfig.connectionNoProxy || "",
+    vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
+    strictProxy: connection.provider === "codex" || proxyConfig.strictProxy === true,
+    requireAccountProxy: connection.provider === "codex",
+  };
+  if (connection.provider === "codex" && !proxyOptions.vercelRelayUrl && (!proxyOptions.connectionProxyEnabled || !proxyOptions.connectionProxyUrl)) {
+    return { models: [], warning: "Codex account has no assigned proxy; refusing direct catalog request." };
+  }
+  if (connection.provider === "codex") connection._codexProxyOptions = proxyOptions;
   if (!accessToken) {
     return { error: "No valid token found", status: 401 };
   }
@@ -191,8 +205,8 @@ const PROVIDER_MODELS_CONFIG = {
   },
   codex: {
     customResolver: buildOAuthResolver({
-      refreshFn: (conn) => refreshCodexToken(conn.refreshToken),
-      fetchFn: (token) => fetch(CODEX_MODELS_URL, {
+      refreshFn: (conn) => refreshCodexToken(conn.refreshToken, conn._codexProxyOptions),
+      fetchFn: (token, conn) => proxyAwareFetch(CODEX_MODELS_URL, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -200,7 +214,7 @@ const PROVIDER_MODELS_CONFIG = {
           "Authorization": `Bearer ${token}`,
           "originator": "codex_cli_rs"
         }
-      }),
+      }, conn._codexProxyOptions),
       parseFn: parseCodexModels,
       errorLabel: "Failed to fetch Codex models"
     })

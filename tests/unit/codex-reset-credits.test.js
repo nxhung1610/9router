@@ -61,10 +61,10 @@ describe("Codex reset credits", () => {
     });
 
     const { getCodexRateLimitResetCredits } = await import("../../open-sse/services/usage/codex.js");
-    const result = await getCodexRateLimitResetCredits("token", { strictProxy: false }, { workspaceId: "acct_123" });
+    const result = await getCodexRateLimitResetCredits("token", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.local", strictProxy: false }, { workspaceId: "acct_123" });
 
     expect(mocks.proxyAwareFetch).toHaveBeenCalledWith(
-      expect.stringContaining("/rate-limit-reset-credits"),
+      "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
       expect.objectContaining({
         method: "GET",
         headers: expect.objectContaining({
@@ -72,7 +72,7 @@ describe("Codex reset credits", () => {
           "ChatGPT-Account-ID": "acct_123",
         }),
       }),
-      { strictProxy: false },
+      { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.local", strictProxy: true, requireAccountProxy: true },
     );
     expect(result).toEqual({
       availableCount: 2,
@@ -131,11 +131,11 @@ describe("Codex reset credits", () => {
     expect(mocks.refreshAndUpdateCredentials).toHaveBeenCalledWith(
       connection,
       false,
-      expect.objectContaining({ connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.local", strictProxy: false }),
+      expect.objectContaining({ connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.local", strictProxy: true }),
     );
     expect(mocks.getCodexRateLimitResetCredits).toHaveBeenCalledWith(
       "new-token",
-      expect.objectContaining({ connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.local", strictProxy: false }),
+      expect.objectContaining({ connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.local", strictProxy: true }),
       { workspaceId: "acct_123" },
     );
   });
@@ -203,7 +203,7 @@ describe("Codex reset credits", () => {
     expect(mocks.consumeCodexRateLimitResetCredit).toHaveBeenCalledWith(
       "token",
       expect.any(String),
-      expect.objectContaining({ strictProxy: false }),
+      expect.objectContaining({ strictProxy: true, requireAccountProxy: true }),
     );
   });
 });

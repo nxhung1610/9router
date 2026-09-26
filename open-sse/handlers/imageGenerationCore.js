@@ -1,6 +1,8 @@
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
@@ -49,6 +51,16 @@ export async function handleImageGenerationCore({
       `Provider '${provider}' does not support image generation`
     );
   }
+
+  const effectiveProxy = provider === "codex" ? await resolveConnectionProxyConfig(credentials?.providerSpecificData || {}) : (credentials?.providerSpecificData || {});
+  const proxyOptions = {
+    connectionProxyEnabled: effectiveProxy.connectionProxyEnabled === true,
+    connectionProxyUrl: effectiveProxy.connectionProxyUrl || "",
+    connectionNoProxy: effectiveProxy.connectionNoProxy || "",
+    vercelRelayUrl: effectiveProxy.vercelRelayUrl || "",
+    strictProxy: provider === "codex" || effectiveProxy.strictProxy === true,
+    requireAccountProxy: provider === "codex",
+  };
 
   // Executor-delegating adapters: skip manual URL/headers/body, use the proven executor flow
   if (adapter.useExecutor && adapter.executeViaExecutor) {
@@ -107,11 +119,14 @@ export async function handleImageGenerationCore({
 
   let providerResponse;
   try {
-    providerResponse = await fetch(url, {
+    const requestOptions = {
       method: "POST",
       headers,
       body: serializeRequestBody(requestBody),
-    });
+    };
+    providerResponse = provider === "codex"
+      ? await proxyAwareFetch(url, requestOptions, proxyOptions)
+      : await fetch(url, requestOptions);
   } catch (error) {
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("IMAGE", `Fetch error: ${errMsg}`);
@@ -127,7 +142,7 @@ export async function handleImageGenerationCore({
       providerResponse.status === HTTP_STATUS.FORBIDDEN)
   ) {
     const newCredentials = await refreshWithRetry(
-      () => executor.refreshCredentials(credentials, log),
+      () => executor.refreshCredentials(credentials, log, proxyOptions),
       3,
       log
     );
@@ -141,11 +156,14 @@ export async function handleImageGenerationCore({
         const retryBody = await adapter.buildBody(model, body);
         const retryHeaders = adapter.buildHeaders(credentials, retryBody, model, body);
         const retryUrl = adapter.buildUrl(model, credentials);
-        providerResponse = await fetch(retryUrl, {
+        const retryOptions = {
           method: "POST",
           headers: retryHeaders,
           body: serializeRequestBody(retryBody),
-        });
+        };
+        providerResponse = provider === "codex"
+          ? await proxyAwareFetch(retryUrl, retryOptions, proxyOptions)
+          : await fetch(retryUrl, retryOptions);
       } catch {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
       }

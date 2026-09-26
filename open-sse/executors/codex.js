@@ -211,16 +211,16 @@ function codexSseErrorResponse(status, message) {
 export class CodexExecutor extends BaseExecutor {
   constructor() {
     super("codex", PROVIDERS.codex);
-    this._currentSessionId = null;
   }
 
   /**
-   * Override headers to add codex-specific identity headers.
-   * transformRequest runs BEFORE buildHeaders, sets this._currentSessionId.
+   * Override headers to add Codex-specific identity headers.
+   * The session ID is taken from this request's transformed body, never executor instance state.
    */
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, url, model, transformedBody) {
     const headers = super.buildHeaders(credentials, stream);
-    headers["session_id"] = this._currentSessionId || credentials?.connectionId || "default";
+    const sessionId = transformedBody?.prompt_cache_key || resolveCacheSessionId(transformedBody || {}, credentials);
+    if (sessionId) headers["session_id"] = sessionId;
     // Identify client type to Codex backend (matches official codex CLI)
     if (!headers["originator"]) headers["originator"] = "codex_cli_rs";
     // Account/workspace binding header — required when multiple Codex accounts
@@ -238,14 +238,22 @@ export class CodexExecutor extends BaseExecutor {
     return headers;
   }
 
-  buildUrl(model, stream, urlIndex = 0, credentials = null) {
+  buildUrl(model, stream, urlIndex = 0, credentials = null, requestContext = null) {
     const base = super.buildUrl(model, stream, urlIndex, credentials);
-    return this._isCompact ? `${base}/compact` : base;
+    return requestContext?.compact ? `${base}/compact` : base;
   }
 
-  async refreshCredentials(credentials, log) {
+  async refreshCredentials(credentials, log, proxyOptions = null) {
     if (!credentials?.refreshToken) return null;
-    return refreshProviderCredentials("codex", credentials, log);
+    const accountProxy = proxyOptions || {
+      connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
+      connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
+      connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
+      vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
+      strictProxy: true,
+      requireAccountProxy: true,
+    };
+    return refreshProviderCredentials("codex", credentials, log, accountProxy);
   }
 
   needsRefresh(credentials) {
@@ -277,7 +285,8 @@ export class CodexExecutor extends BaseExecutor {
   async execute(args) {
     const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
     const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
-    dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
+    const hasSessionId = !!resolveCacheSessionId(args.body, args.credentials);
+    dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | hasSessionId=${hasSessionId}`);
     if (imgCount > 0) {
       const t0 = Date.now();
       await this.prefetchImages(args.body);
@@ -290,9 +299,12 @@ export class CodexExecutor extends BaseExecutor {
     // Reuses 503 retry config — same semantic: upstream temporarily unavailable
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
     const { attempts, delayMs } = resolveRetryEntry(retryConfig[503]);
+    // BaseExecutor's transform removes `_compact` from the mutable body. Preserve
+    // the original route metadata across this outer SSE retry loop as well.
+    const requestContext = args.requestContext || { compact: !!args.body?._compact };
     let attempt = 0;
     while (true) {
-      const result = await super.execute(args);
+      const result = await super.execute({ ...args, requestContext });
       const peek = await this._peekSseTransientError(result.response);
       if (!peek.matched) {
         // Replace body with re-assembled stream (prefix bytes already read + rest)
@@ -410,10 +422,9 @@ export class CodexExecutor extends BaseExecutor {
    * Image fetching is handled separately in prefetchImages() so this stays sync.
    */
   transformRequest(model, body, stream, credentials) {
-    this._isCompact = !!body._compact;
     delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
-    this._currentSessionId = resolveCacheSessionId(body, credentials);
+    const sessionId = resolveCacheSessionId(body, credentials);
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
     if (normalized) body.input = normalized;
@@ -442,8 +453,8 @@ export class CodexExecutor extends BaseExecutor {
     body.store = false;
 
     // Inject prompt_cache_key for stable Codex prompt caching
-    if (!body.prompt_cache_key && this._currentSessionId) {
-      body.prompt_cache_key = this._currentSessionId;
+    if (!body.prompt_cache_key && sessionId) {
+      body.prompt_cache_key = sessionId;
     }
 
     // Map virtual Codex review models to the upstream Codex model before suffix parsing.

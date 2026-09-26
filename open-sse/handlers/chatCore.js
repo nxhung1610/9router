@@ -31,6 +31,7 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType, shouldDefaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -339,13 +340,17 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log, provider, model, reqTag
   });
 
+  const effectiveProxy = provider === "codex" ? await resolveConnectionProxyConfig(credentials?.providerSpecificData || {}) : (credentials?.providerSpecificData || {});
   const proxyOptions = {
-    connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
-    connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
-    connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
-    vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
-    strictProxy: credentials?.providerSpecificData?.strictProxy === true
-      || (provider === "opencode" && credentials?.providerSpecificData?.connectionProxyEnabled === true),
+    connectionProxyEnabled: effectiveProxy.connectionProxyEnabled === true,
+    connectionProxyUrl: effectiveProxy.connectionProxyUrl || "",
+    connectionNoProxy: effectiveProxy.connectionNoProxy || "",
+    vercelRelayUrl: effectiveProxy.vercelRelayUrl || "",
+    strictProxy: effectiveProxy.strictProxy === true
+      || provider === "codex"
+      || (provider === "opencode" && effectiveProxy.connectionProxyEnabled === true),
+    // Codex account traffic must leave through that account's proxy or not at all.
+    requireAccountProxy: provider === "codex",
   };
 
   if (proxyOptions.vercelRelayUrl) {
@@ -434,7 +439,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
       // invalid_grant → auth_failed retryable=false.
       const newCredentials = await refreshWithRetry(async () => {
-        const result = await executor.refreshCredentials(credentials, log);
+        const result = await executor.refreshCredentials(credentials, log, proxyOptions);
         if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
           if (result.accessToken) credentials.accessToken = result.accessToken;
           credentials.refreshToken = result.refreshToken;
