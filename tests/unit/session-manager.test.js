@@ -76,6 +76,25 @@ describe("resolveSessionId", () => {
     expect(first).not.toBe(second);
   });
 
+  it("does not use x-client-request-id as a Codex conversation session", () => {
+    const first = resolveSessionId({
+      headers: { "x-client-request-id": "req-1" },
+      body: bodyWithUserOnly,
+      connectionId: "connCodex",
+      scope: "codex",
+    });
+    const second = resolveSessionId({
+      headers: { "x-client-request-id": "req-2" },
+      body: bodyWithUserOnly,
+      connectionId: "connCodex",
+      scope: "codex",
+    });
+
+    expect(first).not.toBe("req-1");
+    expect(second).not.toBe("req-2");
+    expect(first).toBe(second);
+  });
+
   it("does not treat request-scoped previous_response_id as a Kiro session override", () => {
     const first = resolveSessionId({
       body: { ...bodyWithUserOnly, previous_response_id: "resp-1" },
@@ -138,12 +157,12 @@ describe("resolveSessionId", () => {
     expect(got).toBe("user-123");
   });
 
-  it("keeps x-client-request-id as a session override outside Kiro scope", () => {
+  it("keeps x-client-request-id as a session override for other non-Kiro, non-Codex scopes", () => {
     const got = resolveSessionId({
       headers: { "x-client-request-id": "req-1" },
       body: bodyWithAssistant,
       connectionId: "conn1",
-      scope: "codex",
+      scope: "other-provider",
     });
 
     expect(got).toBe("req-1");

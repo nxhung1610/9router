@@ -97,7 +97,7 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestContext = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
@@ -124,9 +124,11 @@ export class BaseExecutor {
       return true;
     };
 
+    // Capture routing metadata before transforms mutate the body; keep it stable across retries.
+    const routeContext = requestContext || { compact: !!body?._compact };
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
-      const url = this.buildUrl(model, stream, urlIndex, credentials);
-      const transformedBody = this.transformRequest(model, body, stream, credentials);
+      const url = this.buildUrl(model, stream, urlIndex, credentials, routeContext);
+      const transformedBody = this.transformRequest(model, body, stream, credentials, routeContext);
       const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;

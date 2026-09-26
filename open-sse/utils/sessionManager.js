@@ -147,7 +147,9 @@ function extractClientSessionId(headers, body, scope = "") {
         const v = headerValue(headers, key);
         if (v) return v;
     }
-    const requestId = scope === "kiro" ? null : headerValue(headers, "x-client-request-id");
+    // x-client-request-id is request correlation, not a stable conversation session.
+    // Codex and Kiro derive sessions from conversation/cache context instead.
+    const requestId = scope === "kiro" || scope === "codex" ? null : headerValue(headers, "x-client-request-id");
     if (requestId) return requestId;
     const fromBody =
         normalizeSessionId(body?.prompt_cache_key) ||
