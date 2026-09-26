@@ -20,6 +20,14 @@ const CODEX_SOURCE_TO_TARGET = {
   [FORMATS.GEMINI_CLI]: FORMATS.ANTIGRAVITY,
 };
 
+// Anthropic clients (Claude Code) abandon a stream that stays silent for long
+// stretches and report "0 stream events received". `event: ping` is the
+// protocol's own keep-alive, so a Claude client gets one whenever the SSE output
+// has been idle. Sent ONLY for Claude source formats — other clients would
+// receive an event type they never asked for.
+const CLAUDE_PING_BYTES = new TextEncoder().encode('event: ping\ndata: {"type": "ping"}\n\n');
+const CLAUDE_PING_INTERVAL_MS = 15000;
+
 /**
  * Determine which SSE transform stream to use based on provider/format.
  */
@@ -91,7 +99,8 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     ? buildAbortedResponsesTerminalBytes
     : (message) => buildStreamErrorBytes(HTTP_STATUS.GATEWAY_TIMEOUT, message, sourceFormat);
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
+  const pingBytes = sourceFormat === FORMATS.CLAUDE ? CLAUDE_PING_BYTES : null;
+  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, pingBytes, CLAUDE_PING_INTERVAL_MS);
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,

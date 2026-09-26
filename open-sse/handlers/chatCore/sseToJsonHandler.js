@@ -7,6 +7,7 @@ import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 import { unfenceJsonChoices } from "../../utils/jsonFence.js";
+import { openAICompletionToClaudeMessage, parseToolArguments } from "./completionToClaude.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
@@ -108,6 +109,54 @@ function chatCompletionToResponses(responseBody, customToolNames = null) {
 }
 
 /**
+ * Convert a Responses-API body into an Anthropic Message.
+ *
+ * A Claude client (Claude Code / /v1/messages) that retried without streaming
+ * against a Responses-API provider (codex, grok-cli, …) must still receive
+ * `type: "message"`; otherwise it gets `output[]` on HTTP 200 and reports
+ * "body is JSON but not a Message".
+ */
+function responsesToClaudeMessage(jsonResponse, fallbackModel) {
+  const content = [];
+
+  for (const item of jsonResponse?.output || []) {
+    if (item?.type === RESPONSES_ITEM.REASONING) {
+      const thinkText = (item.summary || []).map((s) => s.text || "").join("");
+      if (thinkText) content.push({ type: "thinking", thinking: thinkText });
+    } else if (item?.type === RESPONSES_ITEM.MESSAGE) {
+      const text = textFromResponsesMessageItem(item);
+      if (text.length > 0) content.push({ type: "text", text });
+    } else if (item?.type === RESPONSES_ITEM.FUNCTION_CALL) {
+      content.push({
+        type: "tool_use",
+        id: item.call_id || item.id || `toolu_${Date.now()}_${content.length}`,
+        name: item.name || "",
+        input: parseToolArguments(item.arguments),
+      });
+    }
+  }
+  if (content.length === 0) content.push({ type: "text", text: "" });
+
+  const usage = jsonResponse?.usage || {};
+  const hasToolUse = content.some((block) => block.type === "tool_use");
+  return {
+    id: String(jsonResponse?.id || `msg_${Date.now()}`),
+    type: "message",
+    role: ROLE.ASSISTANT,
+    model: fallbackModel || jsonResponse?.model || "unknown",
+    content,
+    stop_reason: hasToolUse ? "tool_use" : "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: (usage.input_tokens || 0)
+        + (usage.cache_read_input_tokens || usage.cached_tokens || 0)
+        + (usage.cache_creation_input_tokens || 0),
+      output_tokens: usage.output_tokens || 0,
+    },
+  };
+}
+
+/**
  * Parse OpenAI-style SSE text into a single chat completion JSON.
  * Used when provider forces streaming but client wants non-streaming.
  */
@@ -181,7 +230,20 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
+function jsonResponseHeadersFromUpstream(upstreamHeaders) {
+  const headers = new Headers({ "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+  // Forward request correlation/rate-limit metadata, never stale SSE framing.
+  for (const [name, value] of upstreamHeaders || []) {
+    const lower = name.toLowerCase();
+    if (lower === "request-id" || lower === "x-request-id" || lower.startsWith("anthropic-") || lower.startsWith("x-ratelimit-") || lower.startsWith("ratelimit-")) {
+      headers.set(name, value);
+    }
+  }
+  return headers;
+}
+
 export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, reqTag, log }) {
+  const jsonHeaders = jsonResponseHeadersFromUpstream(providerResponse?.headers);
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -225,9 +287,22 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         status: "success"
       }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
 
+      // Client is Claude → Anthropic Message. Without this the client gets a
+      // chat.completion body (Chat) or a Responses body (output[]) on HTTP 200,
+      // and the Anthropic SDK rejects it: "body is JSON but not a Message".
+      // Claude Code hits this whenever it retries non-streaming against a
+      // forceStream provider.
+      if (sourceFormat === FORMATS.CLAUDE) {
+        // A provider that got the schema as prompt text may wrap the object in a
+        // ```json fence; strip it BEFORE the conversion copies the text.
+        unfenceJsonChoices(body, jsonResponse);
+        const claudeMessage = responsesToClaudeMessage(jsonResponse, model);
+        return { success: true, response: new Response(JSON.stringify(restoreToolNames(claudeMessage, toolNameMap)), { headers: jsonHeaders }) };
+      }
+
       // Client is Responses API → return as-is
       if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
-        return { success: true, response: new Response(JSON.stringify(restoreToolNames(jsonResponse, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
+        return { success: true, response: new Response(JSON.stringify(restoreToolNames(jsonResponse, toolNameMap)), { headers: jsonHeaders }) };
       }
 
       // Build client-format response.
@@ -286,7 +361,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       // JSON mode: drop a ```json fence the provider wrapped the object in.
       unfenceJsonChoices(body, finalResp);
 
-      return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalResp, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
+      return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalResp, toolNameMap)), { headers: jsonHeaders }) };
     } catch (err) {
       console.error("[ChatCore] Responses API SSE→JSON failed:", err);
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");
@@ -366,9 +441,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
     const finalBody = sourceFormat === FORMATS.OPENAI_RESPONSES
       ? chatCompletionToResponses(parsed, customToolNames)
-      : parsed;
+      : sourceFormat === FORMATS.CLAUDE
+        ? openAICompletionToClaudeMessage(parsed, model)
+        : parsed;
 
-    return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
+    return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: jsonHeaders }) };
   } catch (err) {
     console.error("[ChatCore] Chat Completions SSE→JSON failed:", err);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");

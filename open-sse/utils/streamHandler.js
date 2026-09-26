@@ -99,10 +99,20 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  * @param {function} [onAbortTerminal] - Receives a human-readable abort
  * message and returns terminal SSE bytes to emit downstream.
  */
-export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null) {
+export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, pingBytes = null, pingIntervalMs = 15000) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
   let terminalEmitted = false;
+  let pingTimer = null;
+  let lastOutputAt = Date.now();
+  let streamEnded = false;
+
+  const clearPing = () => {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+  };
 
   // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
   const emitTerminal = (controller) => {
@@ -115,8 +125,33 @@ export function createDisconnectAwareStream(transformStream, streamController, o
   };
 
   return new ReadableStream({
+    start(controller) {
+      // Idle keep-alive: an Anthropic client (Claude Code) that sees no byte for
+      // long stretches gives up and reports "0 stream events received". A
+      // non-Claude client would choke on the frame, so the caller passes pingBytes
+      // only for the Claude source format.
+      if (pingBytes && pingIntervalMs > 0) {
+        pingTimer = setInterval(() => {
+          if (streamEnded || !streamController.isConnected() || controller.desiredSize === null) {
+            clearPing();
+            return;
+          }
+          if (Date.now() - lastOutputAt >= pingIntervalMs) {
+            try {
+              controller.enqueue(pingBytes);
+              lastOutputAt = Date.now();
+            } catch {
+              clearPing();
+            }
+          }
+        }, Math.min(pingIntervalMs, 5000));
+        pingTimer?.unref?.();
+      }
+    },
+
     async pull(controller) {
       if (!streamController.isConnected()) {
+        clearPing();
         emitTerminal(controller);
         controller.close();
         return;
@@ -126,12 +161,17 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         const { done, value } = await reader.read();
 
         if (done) {
+          clearPing();
+          streamEnded = true;
           streamController.handleComplete();
           controller.close();
           return;
         }
+        lastOutputAt = Date.now();
         controller.enqueue(value);
       } catch (error) {
+        clearPing();
+        streamEnded = true;
         const wasConnected = streamController.isConnected();
         // Controller already closed = downstream ended; not an upstream error, skip noisy log.
         const msg0 = error?.message || "";
@@ -169,6 +209,8 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     },
 
     cancel(reason) {
+      clearPing();
+      streamEnded = true;
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel();
       writer.abort();
@@ -192,7 +234,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, pingBytes = null, pingIntervalMs = 15000) {
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -254,7 +296,9 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
     wrappedController,
-    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null
+    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,
+    pingBytes,
+    pingIntervalMs
   );
 }
 
